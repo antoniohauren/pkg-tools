@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/psf", "crates/ps4-pkg", "crates/pkg-cli"]
+members = ["crates/psf", "crates/ps4-pkg", "crates/pkg-cli", "crates/pkg-gtk"]
+default-members = ["crates/psf", "crates/ps4-pkg", "crates/pkg-cli"]
 resolver = "3"
 
 [workspace.package]

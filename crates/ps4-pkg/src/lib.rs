@@ -29,6 +29,7 @@ pub enum Error {
     },
     LimitExceeded(&'static str),
     KeyRecoveryFailed,
+    Cancelled,
     UnsafePath(String),
     IncompleteExtraction {
         path: std::path::PathBuf,
@@ -54,6 +55,7 @@ impl fmt::Display for Error {
                 f,
                 "fake-key recovery failed: unsupported keyset or damaged key material"
             ),
+            Self::Cancelled => write!(f, "extraction cancelled"),
             Self::UnsafePath(s) => write!(f, "unsafe or conflicting extraction path: {s:?}"),
             Self::IncompleteExtraction { path, source } => {
                 write!(f, "incomplete extraction at {}: {source}", path.display())
@@ -228,7 +230,22 @@ impl<R: Read + Seek> Package<R> {
     /// Read plaintext PARAM.SFO bytes for `psf::parse`. Absence is `Ok(None)`;
     /// encrypted metadata is a distinct error, not missing or malformed SFO.
     pub fn read_param_sfo(&mut self) -> Result<Option<Vec<u8>>, Error> {
-        let Some(entry) = self.entries.iter().find(|e| e.id == 0x1000) else {
+        self.read_plaintext_entry(0x1000, MAX_SFO_SIZE, "PARAM.SFO exceeds 16 MiB")
+    }
+
+    /// Read plaintext icon0.png without opening or decrypting the application tree.
+    /// Missing artwork is `None`; encrypted artwork reports unavailable material.
+    pub fn read_icon0(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        self.read_plaintext_entry(0x1200, 4 * 1024 * 1024, "icon0.png exceeds 4 MiB")
+    }
+
+    fn read_plaintext_entry(
+        &mut self,
+        id: u32,
+        limit: u32,
+        limit_message: &'static str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let Some(entry) = self.entries.iter().find(|e| e.id == id) else {
             return Ok(None);
         };
         if entry.encrypted() {
@@ -237,8 +254,8 @@ impl<R: Read + Seek> Package<R> {
                 key_index: entry.key_index(),
             });
         }
-        if entry.size > MAX_SFO_SIZE {
-            return Err(Error::LimitExceeded("PARAM.SFO exceeds 16 MiB"));
+        if entry.size > limit {
+            return Err(Error::LimitExceeded(limit_message));
         }
         self.reader.seek(SeekFrom::Start(u64::from(entry.offset)))?;
         let mut data = vec![0; entry.size as usize];

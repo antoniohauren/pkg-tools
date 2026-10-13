@@ -1,0 +1,208 @@
+using Gtk 4.0;
+using Adw 1;
+
+menu main_menu {
+  section {
+    item {
+      label: "All Info";
+      action: "win.all-info";
+    }
+  }
+  section {
+    item {
+      label: "About PKG Tools";
+      action: "win.about";
+    }
+    item {
+      label: "Quit";
+      action: "win.quit";
+    }
+  }
+}
+
+Adw.ApplicationWindow window {
+  title: "PKG Tools";
+  default-width: 960;
+  default-height: 600;
+  content: Adw.ToastOverlay toasts {
+    child: Adw.ToolbarView {
+      [top]
+      Adw.HeaderBar {
+        title-widget: Adw.WindowTitle { title: "PKG Tools"; subtitle: "PlayStation 4 packages"; };
+        [start]
+        Gtk.Button open {
+          label: "Open…";
+          tooltip-text: "Open a package (Ctrl+O)";
+        }
+        [start]
+        Gtk.Spinner spinner { opacity: 0; }
+        [end]
+        Gtk.MenuButton {
+          icon-name: "open-menu-symbolic";
+          tooltip-text: "Main Menu";
+          menu-model: main_menu;
+        }
+        [end]
+        Gtk.Button extract {
+          label: "Extract…";
+          sensitive: false;
+          styles ["suggested-action"]
+        }
+      }
+      content: Gtk.Box {
+        orientation: vertical;
+        Gtk.Stack pages {
+          vexpand: true;
+          transition-type: crossfade;
+          Adw.StatusPage welcome {
+            icon-name: "package-x-generic-symbolic";
+            title: "Look Inside Your Packages";
+            description: "Drop a package here or open one to inspect its metadata and extract supported fake packages.";
+            child: Gtk.Button welcome_open {
+              label: "Open Package…";
+              halign: center;
+              styles ["pill", "suggested-action"]
+            };
+          }
+          Gtk.Box details {
+            orientation: vertical;
+            Gtk.ScrolledWindow {
+              vexpand: true;
+              hscrollbar-policy: never;
+              child: Adw.Clamp {
+                maximum-size: 1000;
+                tightening-threshold: 800;
+                child: Gtk.Box {
+                  orientation: horizontal;
+                  spacing: 24;
+                  margin-start: 24;
+                  margin-end: 24;
+                  margin-top: 16;
+                  margin-bottom: 16;
+                  Gtk.Box {
+                    orientation: vertical;
+                    spacing: 16;
+                    valign: start;
+                    Gtk.Image artwork {
+                      icon-name: "package-x-generic-symbolic";
+                      pixel-size: 280;
+                      halign: center;
+                      tooltip-text: "Game artwork";
+                    }
+                    Gtk.Label package_title {
+                      wrap: true;
+                      max-width-chars: 24;
+                      selectable: true;
+                      xalign: 0.5;
+                      justify: center;
+                      styles ["title-1"]
+                    }
+                  }
+                  Gtk.Box {
+                    orientation: vertical;
+                    spacing: 12;
+                    hexpand: true;
+                    Adw.PreferencesGroup {
+                      title: "Package Overview";
+                      Adw.ActionRow kind { title: "Type"; subtitle-selectable: true; }
+                      Adw.ActionRow title_id { title: "Title ID"; subtitle-selectable: true; }
+                      Adw.ActionRow version { title: "Version"; subtitle-selectable: true; }
+                      Adw.ActionRow size { title: "Package size"; subtitle-selectable: true; }
+                      Adw.ActionRow content_id { title: "Content ID"; subtitle-selectable: true; }
+                      Adw.ActionRow source { title: "Source"; subtitle-selectable: true; }
+                    }
+                    Gtk.Label {
+                      label: "Extraction creates a new folder inside your chosen destination. Existing files are never replaced.";
+                      wrap: true;
+                      xalign: 0;
+                      styles ["dim-label"]
+                    }
+                  }
+                };
+              };
+            }
+          }
+        }
+      };
+    };
+  };
+}
+
+Adw.Dialog info_dialog {
+  title: "All Info";
+  content-width: 720;
+  content-height: 520;
+  child: Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {}
+    content: Gtk.ScrolledWindow {
+      hscrollbar-policy: never;
+      child: Adw.Clamp {
+        maximum-size: 680;
+        child: Gtk.Box {
+          orientation: vertical;
+          spacing: 24;
+          margin-start: 24;
+          margin-end: 24;
+          margin-top: 16;
+          margin-bottom: 24;
+          Adw.PreferencesGroup {
+            Adw.ActionRow metadata_status { title: "Metadata"; subtitle-selectable: true; }
+          }
+          Adw.PreferencesGroup {
+            title: "Header, SFO &amp; Container Entries";
+            description: "Header inspection does not verify authenticity or extractability. Binary values show a preview; use CLI JSON for complete raw values.";
+            Gtk.TextView metadata {
+              editable: false;
+              cursor-visible: false;
+              monospace: true;
+              wrap-mode: word_char;
+              top-margin: 16;
+              bottom-margin: 16;
+              left-margin: 16;
+              right-margin: 16;
+              styles ["card"]
+            }
+          }
+        };
+      };
+    };
+  };
+}
+
+Adw.Dialog extraction_dialog {
+  title: "Extracting Package";
+  content-width: 420;
+  can-close: false;
+  child: Gtk.Box {
+    orientation: vertical;
+    spacing: 20;
+    margin-start: 28;
+    margin-end: 28;
+    margin-top: 28;
+    margin-bottom: 28;
+    Gtk.Label {
+      label: "Extracting Package";
+      styles ["title-2"]
+    }
+    Gtk.Label extraction_status {
+      label: "Preparing package…";
+      wrap: true;
+      justify: center;
+    }
+    Gtk.ProgressBar extraction_progress {
+      show-text: true;
+      text: "Preparing…";
+      pulse-step: 0.1;
+    }
+    Gtk.Label extraction_transfer {
+      label: "Calculating output size…";
+      styles ["dim-label", "numeric"]
+    }
+    Gtk.Button cancel {
+      label: "Cancel";
+      halign: center;
+      styles ["pill"]
+    }
+  };
+}

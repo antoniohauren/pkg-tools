@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PKG Tools
+Comment=Inspect and extract PlayStation 4 packages
+Exec=pkg-gtk %F
+Icon=package-x-generic
+Terminal=false
+Categories=Utility;Archiving;GTK;
+StartupNotify=true

@@ -1,7 +1,8 @@
 # PKG Tools
 
-Library-first Rust package tools. PS4 header/SFO inspection and streaming FPKG
-base/full-update extraction are implemented. Extraction is verified on Linux
+Library-first Rust package tools with a CLI and a native GNOME application.
+PS4 header/SFO inspection and streaming FPKG base/full-update extraction are
+implemented. Extraction is verified on Linux
 against two local fixtures; see [coverage and format decisions](docs/extraction.md).
 
 ```sh
@@ -16,6 +17,55 @@ current checks used Rust 1.99 on Linux. `psf` is standard-library-only; `ps4-pkg
 uses pure-Rust crypto/compression and safe Unix filesystem calls through `rustix`.
 The CLI uses `serde_json`. [Dependency decisions](docs/dependencies-and-fixtures.md).
 
+## GNOME application
+
+`pkg-gtk` provides a native Rust GTK4/libadwaita interface, authored in
+Blueprint. Overview shows game artwork, title, title ID, application version,
+game/patch type, package size, content ID and source. **All Info** in the
+hamburger menu opens a modal dialog containing headers,
+SFO metadata and container records. Binary metadata previews stop at 64 bytes;
+use CLI JSON for complete raw values. Artwork must be a PNG no larger than
+4 MiB with dimensions up to 2048 × 2048. Unreadable artwork falls back to a
+package icon; unknown metadata is labeled explicitly. Inspection and extraction
+run on background workers.
+
+Install GTK **4.10+**, libadwaita **1.5+** development packages, `pkg-config`,
+and `blueprint-compiler`, then run:
+
+```sh
+cargo run --release -p pkg-gtk
+cargo run --release -p pkg-gtk -- /path/to/game.pkg
+```
+
+Use **Open** (Ctrl+O) or drop a single package anywhere in the window to inspect it.
+Drops are ignored while an operation is active. **Extract** asks for a parent folder
+and creates `<package-stem>-extracted` inside it. That directory must not already
+exist. Errors include the partial output path when extraction fails. Extraction
+uses a modal dialog with byte-based progress, written/total MB, live output MB/s
+and Cancel. Package preparation shows an indeterminate bar until the decoded
+output size is known. Progress counts extracted bytes, not compressed input;
+MB uses decimal units. The window stays open until the operation finishes.
+**Cancel** stops extraction between 64 KiB chunks or entries. During initial
+package-tree preparation, cancellation takes effect once preparation finishes.
+Cancelled partial output remains marked `.pkg-tools-incomplete`; the dialog
+names its location. Remove that output folder before retrying, or choose a
+different parent. The library's format and extraction limits below also apply
+to the GUI. Use release builds for extraction: debug crypto/decompression is
+substantially slower.
+
+Blueprint is compiled and embedded during the Cargo build; no external UI files
+are needed at runtime. Plain `cargo build` retains the library/CLI-only build;
+`--workspace` includes the GUI and requires its system dependencies.
+
+Optional desktop launcher installation (ensure `~/.local/bin` is on `PATH`):
+
+```sh
+cargo build --release -p pkg-gtk
+install -Dm755 target/release/pkg-gtk ~/.local/bin/pkg-gtk
+install -Dm644 crates/pkg-gtk/data/io.github.pkg_tools.PkgTools.desktop \
+  ~/.local/share/applications/io.github.pkg_tools.PkgTools.desktop
+```
+
 ## Libraries
 
 - `psf::parse(&bytes)` reads SFO 1.0/1.1, retaining typed values, unknown formats,
@@ -28,6 +78,13 @@ The CLI uses `serde_json`. [Dependency decisions](docs/dependencies-and-fixtures
   `game.entries()` enumerates `FileEntry` paths, kinds and sizes;
   `game.read_entry(index)` returns a borrowed streaming `Read + Seek` reader.
   `game.extract(output_dir)` writes the application layout, including `sce_sys`.
+  `game.extract_with_cancel(output_dir, || cancelled)` supports cooperative
+  cancellation with the same no-overwrite and incomplete-output rules.
+  `game.extract_with_progress(output_dir, || cancelled, |written, total| ...)`
+  reports `(0, total)` initially and decoded bytes after each output chunk.
+  A successful return, rather than the byte count, confirms completion.
+- `package.read_icon0()` reads plaintext artwork up to 4 MiB without opening PFS;
+  missing artwork returns `None`, while encrypted artwork returns an error.
 
 ```rust,ignore
 let mut package = ps4_pkg::Package::open(std::fs::File::open("input.pkg")?)?;
@@ -90,9 +147,21 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Twenty-five workspace tests cover parsing, key recovery, crypto known answers, nested
+The GUI also has an opt-in smoke test requiring a graphical session and a real
+PS4 package. It checks package loading, drag-and-drop, artwork, dialogs and
+progress/cancellation controls:
+
+```sh
+PKG_TOOLS_TEST_PACKAGE=/absolute/path/to/game.pkg \
+  cargo test -p pkg-gtk blueprint_window_and_package_loading -- --ignored
+```
+
+Twenty-nine tests pass in the default workspace suite; the graphical smoke test
+is ignored unless explicitly requested. Coverage includes parsing, bounded artwork,
+GUI metadata helpers, key recovery, crypto known answers, nested
 PFS/PFSC, direct/single/double-indirect reads, >4 GiB virtual files/offsets,
-corruption, path collisions, symlinks, overwrite refusal and incomplete output.
+corruption, path collisions, symlinks, overwrite refusal, cancellation, extraction
+progress and incomplete output.
 Both local PS4 base/full-update fixtures match reference paths, sizes and SHA-256:
 4,583 files and 1,483 directories total. Header/SFO comparisons also pass. Reproduction:
 [reference comparison](tests/reference/README.md).

@@ -57,6 +57,45 @@ fn missing_sfo_and_ps3_are_distinct() {
 }
 
 #[test]
+fn artwork_is_bounded_optional_and_reports_encryption() {
+    let mut data = fixture();
+    assert!(
+        Package::open(Cursor::new(&data))
+            .unwrap()
+            .read_icon0()
+            .unwrap()
+            .is_none()
+    );
+    put32(&mut data, 0x1100, 0x1200);
+    assert_eq!(
+        Package::open(Cursor::new(&data))
+            .unwrap()
+            .read_icon0()
+            .unwrap()
+            .unwrap(),
+        b"raw SFO content!"
+    );
+    put32(&mut data, 0x1108, 0x8000_0000);
+    assert!(matches!(
+        Package::open(Cursor::new(&data)).unwrap().read_icon0(),
+        Err(Error::DecryptionUnavailable {
+            entry_id: 0x1200,
+            ..
+        })
+    ));
+    put32(&mut data, 0x1108, 0);
+    let size = 4 * 1024 * 1024 + 1;
+    data.resize(0x1120 + size, 0);
+    let total = data.len() as u64;
+    put64(&mut data, 0x430, total);
+    put32(&mut data, 0x1114, size as u32);
+    assert!(matches!(
+        Package::open(Cursor::new(&data)).unwrap().read_icon0(),
+        Err(Error::LimitExceeded(_))
+    ));
+}
+
+#[test]
 fn all_truncations_and_overflowed_ranges_fail() {
     let data = fixture();
     for end in 0..data.len() {

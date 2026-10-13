@@ -346,13 +346,34 @@ impl<R: Read + Seek> Game<R> {
     /// Create a new output directory; never merge or overwrite. On failure the
     /// error names the incomplete tree and its marker remains for interruption detection.
     pub fn extract(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
+        self.extract_with_cancel(path, || false)
+    }
+
+    /// Like `extract`, checking cancellation before creating output, between entries,
+    /// and between 64 KiB chunks. Cancelled partial output retains its marker.
+    pub fn extract_with_cancel(
+        &mut self,
+        path: impl AsRef<Path>,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<(), Error> {
+        self.extract_with_progress(path, cancelled, |_, _| {})
+    }
+
+    /// Report output bytes written and total decoded file bytes, initially and
+    /// after each chunk. Completion still requires a successful return value.
+    pub fn extract_with_progress(
+        &mut self,
+        path: impl AsRef<Path>,
+        cancelled: impl FnMut() -> bool,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<(), Error> {
         #[cfg(unix)]
         {
-            disk::extract(self, path.as_ref())
+            disk::extract(self, path.as_ref(), cancelled, progress)
         }
         #[cfg(not(unix))]
         {
-            let _ = path;
+            let _ = (path, cancelled, progress);
             Err(Error::Unsupported(
                 "safe disk extraction currently requires Unix",
             ))
@@ -555,7 +576,21 @@ mod disk {
             Mode::RUSR | Mode::WUSR,
         )?))
     }
-    pub(super) fn extract<R: Read + Seek>(game: &mut Game<R>, path: &Path) -> Result<(), Error> {
+    pub(super) fn extract<R: Read + Seek>(
+        game: &mut Game<R>,
+        path: &Path,
+        mut cancelled: impl FnMut() -> bool,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<(), Error> {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let total = game.entries.iter().try_fold(0u64, |sum, entry| {
+            sum.checked_add(entry.size)
+                .ok_or(Error::LimitExceeded("total extracted size"))
+        })?;
+        let mut completed = 0;
+        progress(0, total);
         let mut parts = path.components().peekable();
         let mut parent = fs::open(
             if path.is_absolute() { "/" } else { "." },
@@ -576,7 +611,11 @@ mod disk {
             let root = open_dir(&parent, name)?;
             create_file(&root, MARKER)?
                 .write_all(b"Extraction incomplete. Remove this tree before retrying.\n")?;
+            let mut buffer = [0; 65536];
             for index in 0..game.entries.len() {
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
                 let e = &game.entries[index];
                 let mut parts = e.path.split('/').peekable();
                 let mut dir = rustix::io::dup(&root).map_err(io::Error::from)?;
@@ -592,12 +631,32 @@ mod disk {
                 } else {
                     let size = e.size;
                     let mut out = create_file(&dir, name)?;
-                    let written = io::copy(&mut game.read_entry(index)?, &mut out)?;
+                    let mut reader = game.read_entry(index)?;
+                    let mut written = 0;
+                    loop {
+                        if cancelled() {
+                            return Err(Error::Cancelled);
+                        }
+                        let count = match reader.read(&mut buffer) {
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                            result => result?,
+                        };
+                        if count == 0 {
+                            break;
+                        }
+                        out.write_all(&buffer[..count])?;
+                        written += count as u64;
+                        completed += count as u64;
+                        progress(completed, total);
+                    }
                     if written != size {
                         return Err(Error::Malformed("short entry read"));
                     }
                     out.flush()?;
                 }
+            }
+            if cancelled() {
+                return Err(Error::Cancelled);
             }
             fs::unlinkat(&root, MARKER, AtFlags::empty()).map_err(io::Error::from)?;
             Ok(())

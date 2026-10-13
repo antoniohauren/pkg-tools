@@ -485,6 +485,43 @@ fn extraction_no_overwrite_symlink_escape_or_invisible_failure() {
     std::os::unix::fs::symlink(&output, temp.join("link")).unwrap();
     assert!(game.extract(temp.join("link/new")).is_err());
     assert!(!output.join("new").exists());
+    let cancelled = temp.join("cancelled");
+    assert!(matches!(
+        game.extract_with_cancel(&cancelled, || true),
+        Err(Error::Cancelled)
+    ));
+    assert!(!cancelled.exists());
+    let result = game.extract_with_cancel(&cancelled, || {
+        std::fs::metadata(cancelled.join("eboot.bin")).is_ok_and(|m| m.len() >= 65536)
+    });
+    assert!(
+        matches!(result, Err(Error::IncompleteExtraction { source, .. }) if matches!(*source, Error::Cancelled))
+    );
+    assert_eq!(
+        std::fs::metadata(cancelled.join("eboot.bin"))
+            .unwrap()
+            .len(),
+        65536
+    );
+    assert!(cancelled.join(".pkg-tools-incomplete").exists());
+    assert!(game.extract(&cancelled).is_err());
+    let expected_size: u64 = game.entries().iter().map(|entry| entry.size()).sum();
+    let mut progress = Vec::new();
+    game.extract_with_progress(
+        temp.join("retry"),
+        || false,
+        |written, total| progress.push((written, total)),
+    )
+    .unwrap();
+    assert_eq!(progress.first(), Some(&(0, expected_size)));
+    assert_eq!(progress.last(), Some(&(expected_size, expected_size)));
+    assert!(progress.windows(2).all(|pair| {
+        pair[0].0 < pair[1].0 && pair[1].0 - pair[0].0 <= 65536 && pair[1].1 == expected_size
+    }));
+    assert_eq!(
+        std::fs::read(temp.join("retry/eboot.bin")).unwrap(),
+        payload()
+    );
     // Fail after enumeration: an input I/O error must leave a visible marker.
     struct Shrinking {
         data: Cursor<Vec<u8>>,
