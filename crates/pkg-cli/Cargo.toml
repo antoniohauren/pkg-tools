@@ -1,0 +1,17 @@
+[package]
+name = "pkg-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pkg-tools"
+path = "src/main.rs"
+
+[dependencies]
+psf = { path = "../psf" }
+ps4-pkg = { path = "../ps4-pkg" }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

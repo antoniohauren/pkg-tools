@@ -1,0 +1,4 @@
+/pkgs/
+/target/
+/tests/reference/bin/
+/tests/reference/obj/

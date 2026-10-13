@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Extraction.cs" />
+    <Compile Include="$(ReferenceRoot)/LibOrbisPkg/PKG/*.cs" Exclude="$(ReferenceRoot)/LibOrbisPkg/PKG/PkgBuilder.cs;$(ReferenceRoot)/LibOrbisPkg/PKG/PkgValidator.cs;$(ReferenceRoot)/LibOrbisPkg/PKG/PkgProperties.cs" />
+    <Compile Include="$(ReferenceRoot)/LibOrbisPkg/SFO/*.cs;$(ReferenceRoot)/LibOrbisPkg/Util/*.cs;$(ReferenceRoot)/LibOrbisPkg/Rif/*.cs;$(ReferenceRoot)/LibOrbisPkg/PlayGo/ChunkDat.cs" />
+    <Compile Include="$(ReferenceRoot)/LibOrbisPkg/PFS/PfsReader.cs;$(ReferenceRoot)/LibOrbisPkg/PFS/PfsStructs.cs;$(ReferenceRoot)/LibOrbisPkg/PFS/XtsDecryptReader.cs" />
+    <Compile Include="$(ReferencePfsc)" />
+  </ItemGroup>
+</Project>
