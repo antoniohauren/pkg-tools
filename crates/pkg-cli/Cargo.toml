@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 psf = { path = "../psf" }
 ps4-pkg = { path = "../ps4-pkg" }
+zarchive = { path = "../zarchive" }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 
 [lints]

@@ -817,6 +817,7 @@ dependencies = [
  "ps4-pkg",
  "psf",
  "serde_json",
+ "zarchive",
 ]
 
 [[package]]
@@ -959,6 +960,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 
 [[package]]
 name = "semver"
@@ -1231,6 +1238,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2acb658219ff8afdcedc1ea506709b2b32812719eb6ac36f47ae43f50404157"
 dependencies = [
  "cipher",
+]
+
+[[package]]
+name = "zarchive"
+version = "0.1.0"
+dependencies = [
+ "ruzstd",
+ "sha2",
 ]
 
 [[package]]

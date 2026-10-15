@@ -94,6 +94,25 @@ fn malformed_unsupported_and_missing_inputs_exit_unsuccessfully() {
 }
 
 #[test]
+fn conversion_rejects_unsupported_inputs_and_bad_options_without_output() {
+    let input = Input::new(b"\x7fPKG");
+    let destination = input.0.parent().unwrap().join("Game.zar");
+    for extra in [vec![], vec!["--typo", "update.pkg"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pkg-tools"))
+            .arg("convert")
+            .arg(&input.0)
+            .arg(&destination)
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!destination.exists());
+        assert!(!destination.with_file_name("Game-UPDATE.zar").exists());
+        assert_eq!(fs::read(&input.0).unwrap(), b"\x7fPKG");
+    }
+}
+
+#[test]
 fn extraction_rejects_ps3_before_creating_output() {
     let input = Input::new(b"\x7fPKG");
     let output = input.0.parent().unwrap().join("output");
