@@ -1,6 +1,243 @@
 use super::*;
 use std::io::Cursor;
 
+#[test]
+fn liberation_publication_cancel_and_no_overwrite() {
+    use std::{cell::Cell, fs};
+    let root = std::env::temp_dir().join(format!("ps3-liberation-test-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let (edat, _) = npdrm::tests::local_edat(true);
+    let raw = vec![42; 131089];
+    let input = fixture(
+        0x8000,
+        &[("USRDIR/test.edat", 2, &edat), ("USRDIR/raw", 3, &raw)],
+    );
+    let package = || {
+        let mut pkg = Package::open(Cursor::new(input.clone())).unwrap();
+        pkg.metadata = vec![
+            Metadata {
+                id: 1,
+                data: 2u32.to_be_bytes().to_vec(),
+            },
+            Metadata {
+                id: 2,
+                data: 5u32.to_be_bytes().to_vec(),
+            },
+            Metadata {
+                id: 3,
+                data: 0x4eu32.to_be_bytes().to_vec(),
+            },
+            Metadata {
+                id: 4,
+                data: vec![0; 8],
+            },
+        ];
+        pkg
+    };
+    let rap = Rap::from_bytes(&[7; 16]).unwrap();
+    let output = root.join("out.pkg");
+    let mut progress = Vec::new();
+    package()
+        .liberate_with_progress(&rap, &output, || false, |w, t| progress.push((w, t)))
+        .unwrap();
+    assert_eq!(progress.last().unwrap().0, progress.last().unwrap().1);
+    assert!(progress.windows(2).all(|p| p[0].0 <= p[1].0));
+    let mut result = Package::open(fs::File::open(&output).unwrap()).unwrap();
+    assert_eq!(result.header.release_type, 0);
+    assert_eq!(result.metadata[0].data, 3u32.to_be_bytes());
+    let index = result
+        .entries
+        .iter()
+        .position(|e| e.path() == "USRDIR/raw")
+        .unwrap();
+    let mut data = Vec::new();
+    result
+        .read_entry(index)
+        .unwrap()
+        .read_to_end(&mut data)
+        .unwrap();
+    assert_eq!(data, raw);
+    let index = result
+        .entries
+        .iter()
+        .position(|e| e.path() == "USRDIR/test.edat")
+        .unwrap();
+    let mut header = [0; 16];
+    result
+        .read_entry(index)
+        .unwrap()
+        .read_exact(&mut header)
+        .unwrap();
+    assert_eq!(be32(&header, 8), 3);
+    let saved = fs::read(&output).unwrap();
+    assert!(
+        package()
+            .liberate_with_progress(&rap, &output, || false, |_, _| {})
+            .is_err()
+    );
+    assert_eq!(fs::read(&output).unwrap(), saved);
+    let cancelled = Cell::new(false);
+    let target = root.join("cancelled.pkg");
+    assert!(
+        package()
+            .liberate_with_progress(
+                &rap,
+                &target,
+                || cancelled.get(),
+                |_, _| cancelled.set(true)
+            )
+            .is_err()
+    );
+    assert!(!target.exists());
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    let target = root.join("race.pkg");
+    assert!(
+        package()
+            .liberate_with_progress(
+                &rap,
+                &target,
+                || false,
+                |written, _| {
+                    if written == 0 {
+                        fs::write(&target, b"existing").unwrap();
+                    }
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"existing");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+    let wrong = Rap::from_bytes(&[8; 16]).unwrap();
+    let target = root.join("bad.pkg");
+    assert!(
+        package()
+            .liberate_with_progress(&wrong, &target, || false, |_, _| {})
+            .is_err()
+    );
+    assert!(!target.exists());
+    let extracted = root.join("extracted");
+    package().extract(&extracted).unwrap();
+    fs::write(extracted.join("license.RAP"), [7; 16]).unwrap();
+    let folder_output = root.join("folder.pkg");
+    let cid = package().header.content_id;
+    liberate_folder_with_progress(&extracted, cid, &rap, &folder_output, || false, |_, _| {})
+        .unwrap();
+    assert_eq!(fs::read(&folder_output).unwrap(), saved);
+    let from_pkg = root.join("liberated-from-pkg");
+    let from_folder = root.join("liberated-from-folder");
+    let mut folder_progress = Vec::new();
+    package()
+        .liberate_to_directory_with_progress(
+            &rap,
+            &from_pkg,
+            || false,
+            |w, t| folder_progress.push((w, t)),
+        )
+        .unwrap();
+    liberate_folder_to_directory_with_progress(
+        &extracted,
+        cid,
+        &rap,
+        &from_folder,
+        || false,
+        |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        folder_progress.last().unwrap().0,
+        folder_progress.last().unwrap().1
+    );
+    assert!(folder_progress.windows(2).all(|p| p[0].0 <= p[1].0));
+    for directory in [&from_pkg, &from_folder] {
+        assert!(!directory.join(pkg_fs::MARKER).exists());
+        assert!(!directory.join("license.RAP").exists());
+        let mut published = Package::open(fs::File::open(&output).unwrap()).unwrap();
+        for index in 0..published.entries.len() {
+            let entry = &published.entries[index];
+            if entry.kind() == FileKind::Directory {
+                continue;
+            }
+            let actual = fs::read(directory.join(entry.path())).unwrap();
+            let mut expected = Vec::new();
+            published
+                .read_entry(index)
+                .unwrap()
+                .read_to_end(&mut expected)
+                .unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+    assert!(
+        package()
+            .liberate_to_directory_with_progress(&rap, &from_pkg, || false, |_, _| {})
+            .is_err()
+    );
+    assert_eq!(fs::read(from_pkg.join("USRDIR/raw")).unwrap(), raw);
+    let partial = root.join("partial-directory");
+    let stop = Cell::new(false);
+    assert!(matches!(
+        package().liberate_to_directory_with_progress(
+            &rap,
+            &partial,
+            || stop.get(),
+            |w, _| {
+                if w > 0 {
+                    stop.set(true);
+                }
+            }
+        ),
+        Err(Error::IncompleteExtraction { .. })
+    ));
+    assert!(partial.join(pkg_fs::MARKER).exists());
+    let invalid = root.join("invalid-directory");
+    assert!(
+        package()
+            .liberate_to_directory_with_progress(&wrong, &invalid, || false, |_, _| {})
+            .is_err()
+    );
+    assert!(!invalid.exists());
+    assert_eq!(fs::read(extracted.join("USRDIR/test.edat")).unwrap(), edat);
+    assert!(
+        liberate_folder_with_progress(&extracted, cid, &rap, &folder_output, || false, |_, _| {})
+            .is_err()
+    );
+    let cancelled_output = root.join("folder-cancelled.pkg");
+    assert!(matches!(
+        liberate_folder_with_progress(&extracted, cid, &rap, &cancelled_output, || true, |_, _| {}),
+        Err(Error::Cancelled)
+    ));
+    assert!(!cancelled_output.exists());
+    fs::write(extracted.join(pkg_fs::MARKER), b"incomplete").unwrap();
+    assert!(
+        liberate_folder_with_progress(
+            &extracted,
+            cid,
+            &rap,
+            &cancelled_output,
+            || false,
+            |_, _| {}
+        )
+        .is_err()
+    );
+    fs::remove_file(extracted.join(pkg_fs::MARKER)).unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&output, extracted.join("link")).unwrap();
+        assert!(
+            liberate_folder_with_progress(
+                &extracted,
+                cid,
+                &rap,
+                &cancelled_output,
+                || false,
+                |_, _| {}
+            )
+            .is_err()
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn header(release: u16) -> Header {
     Header {
         release_type: release,

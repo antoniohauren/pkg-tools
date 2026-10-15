@@ -1,5 +1,11 @@
 //! PS3 retail/debug PKG inspection and container-plaintext extraction.
-//! Does not authenticate signatures or decrypt nested SELF/EDAT/SDAT files.
+//! Inspection/extraction preserves nested SELF/EDAT/SDAT files. The separate
+//! liberation API converts supported local-license NPDRM payloads.
+
+mod liberate;
+mod npdrm;
+pub use liberate::{liberate_folder_to_directory_with_progress, liberate_folder_with_progress};
+pub use npdrm::{Rap, self_content_id};
 
 use aes::{
     Aes128,
@@ -28,6 +34,7 @@ pub enum Error {
     UnsafePath(String),
     Cancelled,
     IncompleteExtraction { path: PathBuf, source: Box<Error> },
+    ConversionFile { path: String, source: Box<Error> },
     Io(io::Error),
 }
 impl fmt::Display for Error {
@@ -37,10 +44,11 @@ impl fmt::Display for Error {
             Self::Unsupported(s) => write!(f, "unsupported PS3 package: {s}"),
             Self::LimitExceeded(s) => write!(f, "PS3 package limit exceeded: {s}"),
             Self::UnsafePath(s) => write!(f, "unsafe or conflicting extraction path: {s:?}"),
-            Self::Cancelled => write!(f, "extraction cancelled"),
+            Self::Cancelled => write!(f, "operation cancelled"),
             Self::IncompleteExtraction { path, source } => {
                 write!(f, "incomplete extraction at {}: {source}", path.display())
             }
+            Self::ConversionFile { path, source } => write!(f, "cannot convert {path}: {source}"),
             Self::Io(e) => write!(f, "package I/O failure: {e}"),
         }
     }
@@ -50,6 +58,7 @@ impl std::error::Error for Error {
         match self {
             Self::Io(e) => Some(e),
             Self::IncompleteExtraction { source, .. } => Some(source.as_ref()),
+            Self::ConversionFile { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }
