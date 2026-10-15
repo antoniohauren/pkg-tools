@@ -145,3 +145,18 @@ The script checks the revision and tracked reader source cleanliness, builds the
 Rust release CLI and original upstream reader, and generates disposable fixtures.
 `--large` streams a sparse-generated >4 GiB file through both implementations.
 No game data is required. See [results and reader limits](../../docs/zarchive.md).
+## PS3 RAP-less conversion oracle
+
+`ps3-liberation.py` requires Python `cryptography` (test-only). Run against a
+source PKG, its RAP, and the converted PKG:
+
+```sh
+python3 tests/reference/ps3-liberation.py SOURCE.pkg LICENSE.rap OUTPUT.pkg \
+  target/release/pkg-tools
+```
+
+Checks transformed SELF sections/HMACs and the new header ECDSA signature;
+transformed EDAT plaintext and hashes; package paths/content ID; unchanged
+file sizes and first/last 64 KiB. Large unchanged files are sampled, not fully
+hashed. Developer-key scanning can take several minutes in Python. No emulator
+or console launch is performed. Fixtures and generated packages stay ignored.

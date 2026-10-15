@@ -2,3 +2,4 @@
 /target/
 /tests/reference/bin/
 /tests/reference/obj/
+__pycache__/
