@@ -14,6 +14,7 @@ cargo run --release -p pkg-cli -- extract INPUT.pkg OUTPUT_DIR
 cargo run --release -p pkg-cli -- pack INPUT_DIR OUTPUT.zar
 cargo run --release -p pkg-cli -- convert GAME.pkg Game.zar
 cargo run --release -p pkg-cli -- convert GAME.pkg Game.zar --update UPDATE.pkg
+cargo run --release -p pkg-cli -- liberate GAME.pkg LICENSE.rap Game-rapless.pkg
 ```
 
 `inspect` and `extract` accept PS3 and PS4 packages. Inputs are detected by magic,
@@ -21,6 +22,12 @@ not filename. Rust 1.89 or newer is required;
 current checks used Rust 1.99 on Linux. `psf` is standard-library-only; `ps4-pkg`
 uses pure-Rust crypto/compression and safe Unix filesystem calls through `rustix`.
 The CLI uses `serde_json`. [Dependency decisions](docs/dependencies-and-fixtures.md).
+
+**Experimental PS3 RAP-less conversion:** `liberate` converts supported local-license
+SELF/EDAT payloads and writes a new PKG, entirely in Rust. Intended for RPCS3 and
+PS3 CFW/HEN; installation/launch on both remains unverified. Supplied SSX fixture's
+converted payloads and SELF signature passed independent checks.
+See [supported formats and limits](docs/ps3.md#rap-less-conversion).
 
 Native Rust ZArchive writing is available through `pack` and `zarchive::Writer`.
 It streams files, spills chunk indexes to disk and publishes finalized output
@@ -80,6 +87,20 @@ Cancellation removes unpublished scratch archives. Preparation and final
 publication are not interruptible; if update publication fails after the base
 is complete, the error identifies the saved base archive.
 Conversion is PS4-only; the action is disabled for PS3 packages.
+
+For PS3, choose **Liberate…** from the hamburger menu, then choose a PKG, the loaded
+package, or an extracted game folder (containing `PARAM.SFO` and `USRDIR`).
+The dialog finds `<content-id>.rap` beside the source or in nearby `exdata` folders
+(also inside extracted folders), ignoring filename case. You can **Link RAP…**
+manually instead; multiple matches require manual selection. The separate overview
+link still applies only to the loaded package and clears when another is opened.
+Choose **Folder…** or **PKG…** as output. Folder output writes liberated files
+directly into a new `<source>-liberated` folder inside the selected parent;
+PKG output repacks them into a new `.pkg`. Both accept PKG or folder inputs.
+Conversion validates the license against encrypted payloads and runs in a background
+worker with Cancel, without replacing existing files. Interrupted folder output is
+marked incomplete; remove that output folder before retrying.
+Use a release build, especially for developer-key discovery and repacking.
 
 Blueprint is compiled and embedded during the Cargo build; no external UI files
 are needed at runtime. Plain `cargo build` retains the library/CLI-only build;

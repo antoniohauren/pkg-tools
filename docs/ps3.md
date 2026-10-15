@@ -35,6 +35,102 @@ Flags retain the overwrite bit as metadata; extraction never overwrites.
   decoding and structural validation do not establish authenticity. Changes in
   otherwise valid file payloads can pass unnoticed.
 
+## Liberate
+
+```sh
+cargo run --release -p pkg-cli -- liberate GAME.pkg LICENSE.rap Game-rapless.pkg
+```
+
+GUI: **Liberate…** opens a source dialog: choose a PKG, the loaded PS3 package,
+or an extracted game root containing `PARAM.SFO` and `USRDIR`. The next dialog
+shows an automatically matched RAP and offers **Link RAP…** to override it.
+Matching uses the full content ID, not the package's display filename or title ID:
+`<content-id>.rap`, case-insensitively, beside the source and in its sibling
+`exdata` directory; extracted folders also search their root and `exdata` child.
+Multiple matches require manual linking. RAP files must contain exactly 16 binary
+bytes; cryptographic validation happens during conversion. RAP files have no
+embedded content ID, so filename matching alone does not establish a valid license.
+No licenses are downloaded. Separate overview links last for the loaded package only.
+
+Extracted folders use `CONTENT_ID` from `PARAM.SFO`, falling back to the NPDRM
+header of `USRDIR/EBOOT.BIN`. The folder is read-only. Choose **Folder…** to write
+liberated payloads directly into a new `<source>-liberated` folder, or **PKG…** to
+save a new `-liberated.pkg`. Both output choices accept either input type.
+Folder output preserves the game tree, without creating an intermediate PKG;
+existing destinations are refused. Cancellation or I/O failure after creation
+leaves an output folder marked `.pkg-tools-incomplete`; remove it before retrying.
+Symlinks, special files, incomplete extraction markers and
+unsafe/conflicting paths are rejected. Folder inputs must remain unchanged while
+conversion runs. Package metadata is synthesized for a free-license PS3 game;
+the original container's optional metadata is unavailable after extraction.
+RAP files inside the tree are omitted from the output package.
+
+This is an **experimental, entirely native Rust** conversion path intended for
+RPCS3 and PS3 CFW/HEN. Neither emulator launch nor console installation/launch
+has been executed. It does not produce a Sony-authenticated retail package for
+stock firmware. There is no runtime scetool, OpenSSL, Python, or key-file dependency.
+
+Supported conversion boundary:
+
+- PS3 game-executable PKGs (metadata content type `5`), with one matching RAP.
+- Local-license NPDRM SELF key revisions `0A`, `19`, `1C`. Metadata is decrypted,
+  section HMACs checked, license changed to FREE, NPD hashes regenerated, and
+  the header signed using the published 3.55 NPDRM key/loader curve `0x27`.
+  Payload sections, compression, executable code, application version, capabilities,
+  and required firmware are preserved. Other SELF revisions are explicit errors.
+- Local-license common EDAT (type `0`), version `3`/`4`, uncompressed flags
+  `0x0C`/`0x3C`, block sizes 1–32 KiB. Header/metadata/block hashes are checked.
+  The original developer key must match a known candidate or occur as 16 raw
+  bytes in decoded local-license SELF sections. Conversion keeps that key so
+  existing game code can open the free-license EDAT; unavailable keys are errors.
+  Output uses authenticated, encrypted `0x0C` blocks with regenerated hashes.
+- SDAT, already-free EDAT/SELF, non-NPDRM SELF, SFO, artwork, and ordinary files
+  are preserved. Files are identified by magic, not just extensions.
+- Network licenses, different per-file content IDs/RAPs, compressed EDAT,
+  PS2 Classics/disc-bound EDAT, unsupported key revisions and unknown crypto
+  modes fail without publishing output. No silent partial liberation.
+- Output is a debug PKG with free-license metadata and recomputed debug header,
+  metadata, QA and stream-cipher fields. This is not full Sony signature
+  authentication; common EDAT signature slots are zeroed and existing SELF
+  footer signatures are not regenerated. Modified-environment acceptance still
+  needs testing on the target firmware/emulator.
+
+`ps3_pkg::Rap::from_bytes` parses the binary RAP. The library entry point is
+`Package::liberate_with_progress(&rap, output, cancelled, progress)`.
+The source is read-only. Output must be new; an exclusive sibling scratch
+directory holds the new package and is removed on failure/cancellation. Inputs
+must remain unchanged during the operation. Successful publication uses a
+no-overwrite hard link, including protection against destination creation races.
+The destination filesystem must support hard links. A crash can leave the hidden
+scratch directory; it contains an unpublished PKG, not a separate plaintext tree.
+
+Limits: each inspected SELF/local EDAT, total transformed files, and total decoded
+SELF sections are separately bounded to 256 MiB; SELF headers to 16 MiB. Multiple
+bounded buffers can coexist. Unchanged payloads stream in 64 KiB chunks. Output
+data regions above 4 GiB are rejected by the legacy package-metadata size field.
+Preparation includes integrity checks, developer-key discovery and a QA hashing
+pass. Progress starts when writing the prepared package; cancellation is checked
+between sections, key-search batches, EDAT blocks and streaming chunks. No
+install/launch guarantee follows from successful payload verification.
+
+Verification (2026-10-15): supplied **SSX / NPUB30892** PKG + RAP produced
+`pkgs/ps3/SSX-rapless.pkg`. An independent Python/cryptography oracle checked
+the converted EBOOT's complete decoded sections, HMACs and new ECDSA signature;
+both converted EDATs' complete plaintext, header/metadata/block hashes; and
+unchanged files' first/last 64 KiB (whole files up to 128 KiB). It did **not** hash
+all 4.17 GB of unchanged data or execute either target runtime. Synthetic tests
+cover crypto known answers, EDAT layouts, wrong RAP, damaged/truncated data,
+unsupported formats, cancellation, no-overwrite and publication races.
+
+Format references: pinned RPCS3 [`key_vault.h`](https://github.com/RPCS3/rpcs3/blob/6fe3c87fb41c29b21d8796b15eca5c80ad3b36d4/rpcs3/Crypto/key_vault.h),
+[`key_vault.cpp`](https://github.com/RPCS3/rpcs3/blob/6fe3c87fb41c29b21d8796b15eca5c80ad3b36d4/rpcs3/Crypto/key_vault.cpp),
+[`unedat.cpp`](https://github.com/RPCS3/rpcs3/blob/6fe3c87fb41c29b21d8796b15eca5c80ad3b36d4/rpcs3/Crypto/unedat.cpp);
+[scetool's SELF header signing/encryption layout](https://github.com/naehrwert/scetool/blob/d78d8986c9ab831f084516f21ecdf87080ac7b78/sce.cpp); loader curve `0x27` from
+[published curve data](https://github.com/Sorvigolova/scetool/blob/64a4689a388c401e5b24bc5c9397111a70d03922/PS3/ldr_curves);
+[PSL1GHT's debug PKG layout](https://github.com/ps3dev/PSL1GHT/blob/master/tools/sfo_pkg/pkg.c). Rust implementations are native; reference tools are
+not vendored. `num-bigint-dig` handles the custom published signing curve and
+`flate2` reads compressed SELF sections; both already existed in the workspace.
+
 ## Validation, memory and filesystem rules
 
 Input length must equal the declared size. Header, metadata, encrypted data,
