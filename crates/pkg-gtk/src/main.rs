@@ -118,6 +118,8 @@ impl Ui {
 
     fn error(&self, title: &str, message: &str) {
         let dialog = adw::AlertDialog::builder()
+            .follows_content_size(false)
+            .content_width(640)
             .heading(title)
             .body(message)
             .build();
@@ -280,6 +282,8 @@ impl Ui {
         let ui = self.clone();
         glib::spawn_future_local(async move {
             let dialog = adw::AlertDialog::builder()
+                .follows_content_size(false)
+                .content_width(640)
                 .heading("Liberate")
                 .body("Choose a PS3 PKG or an extracted game folder. Then save liberated files as a new folder or PKG.")
                 .build();
@@ -361,6 +365,8 @@ impl Ui {
             let note = detected.as_ref().err().cloned().unwrap_or_default();
             let mut rap = linked.or_else(|| detected.ok().flatten());
             let dialog = adw::AlertDialog::builder().heading("Liberate — Link RAP")
+                .follows_content_size(false)
+                .content_width(640)
                 .body(format!("{}\n\nContent ID: {id}\n\n{}\n{note}", source.display(),
                     rap.as_ref().map(|p| format!("RAP: {}", p.display())).unwrap_or_else(||
                         "No matching RAP found beside the source or in its exdata folder. Link a RAP to continue.".into())))
@@ -444,6 +450,8 @@ impl Ui {
         glib::spawn_future_local(async move {
             let directory = if liberating {
                 let dialog = adw::AlertDialog::builder()
+                    .follows_content_size(false)
+                    .content_width(640)
                     .heading("Liberate — Output")
                     .body("Save liberated files directly into a new folder, or repack them into a PKG. Folder output creates a new -liberated folder inside your chosen destination.")
                     .build();
@@ -472,6 +480,8 @@ impl Ui {
             let mut update = None;
             if converting {
                 let dialog = adw::AlertDialog::builder()
+                    .follows_content_size(false)
+                    .content_width(640)
                     .heading("Convert to ZAR")
                     .body("Convert the loaded base game. A matching update can be saved as a separate -UPDATE.zar archive beside it. Existing archives are never replaced.")
                     .build();
@@ -677,6 +687,8 @@ impl Ui {
             match result {
                 Ok(Ok(())) => {
                     let dialog = adw::AlertDialog::builder()
+                        .follows_content_size(false)
+                        .content_width(640)
                         .heading(if liberating {
                             "Liberation Complete"
                         } else if saving_file {
@@ -840,6 +852,8 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         window,
         move |_, _| {
             adw::AboutDialog::builder()
+                .follows_content_size(false)
+                .content_width(640)
                 .application_name("PKG Tools")
                 .application_icon("package-x-generic")
                 .version(env!("CARGO_PKG_VERSION"))
@@ -1049,6 +1063,37 @@ mod tests {
             }
             assert!(ui.rap.borrow().is_none());
             assert!(ui.liberate.is_enabled());
+            ui.liberate.activate(None);
+            context.block_on(glib::timeout_future(Duration::from_millis(100)));
+            let source_dialog = ui
+                .window
+                .upgrade()
+                .unwrap()
+                .visible_dialog()
+                .unwrap()
+                .downcast::<adw::AlertDialog>()
+                .unwrap();
+            source_dialog.emit_by_name::<()>("response", &[&"loaded"]);
+            source_dialog.force_close();
+            context.block_on(glib::timeout_future(Duration::from_millis(500)));
+            let rap_dialog = ui
+                .window
+                .upgrade()
+                .unwrap()
+                .visible_dialog()
+                .unwrap()
+                .downcast::<adw::AlertDialog>()
+                .unwrap();
+            assert_eq!(rap_dialog.heading().as_deref(), Some("Liberate — Link RAP"));
+            let width = rap_dialog.child().unwrap().width();
+            assert!(
+                width >= 600,
+                "Link RAP rendered width: {width}, expected at least 600"
+            );
+            rap_dialog.close();
+            while ui.busy.get() {
+                context.iteration(true);
+            }
         }
         assert!(!ui.title.text().is_empty());
         assert_eq!(ui.pages.visible_child(), Some(ui.details.clone().upcast()));
