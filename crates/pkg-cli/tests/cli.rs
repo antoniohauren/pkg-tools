@@ -49,6 +49,49 @@ fn sfo() -> Vec<u8> {
 }
 
 #[test]
+fn ps3_debug_inspection_extraction_and_overwrite_refusal() {
+    // Independent Python struct/hashlib fixture: PARAM.SFO with TITLE=Synthetic.
+    let hex: String = include_str!("../../../tests/fixtures/ps3-debug.hex")
+        .split_whitespace()
+        .collect();
+    let data: Vec<_> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect();
+    let input = Input::new(&data);
+    let result = input.inspect(true);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(doc["format"], "ps3-pkg");
+    assert_eq!(doc["header"]["release_type"], 0);
+    assert_eq!(doc["sfo"]["entries"][0]["value"], "Synthetic");
+    assert_eq!(doc["entries"][0]["path"], "PARAM.SFO");
+    let human = input.inspect(false);
+    assert!(human.status.success());
+    assert!(!String::from_utf8_lossy(&human.stdout).contains("FPKG"));
+    let destination = input.0.parent().unwrap().join("out");
+    for success in [true, false] {
+        let result = Command::new(env!("CARGO_BIN_EXE_pkg-tools"))
+            .arg("extract")
+            .arg(&input.0)
+            .arg(&destination)
+            .output()
+            .unwrap();
+        assert_eq!(result.status.success(), success);
+    }
+    let bytes = fs::read(destination.join("PARAM.SFO")).unwrap();
+    assert_eq!(
+        psf::parse(&bytes).unwrap().get(b"TITLE").unwrap().value,
+        psf::Value::Text(b"Synthetic")
+    );
+    assert_eq!(fs::read(&input.0).unwrap(), data);
+}
+
+#[test]
 fn detects_sfo_by_magic_and_escapes_output() {
     let input = Input::new(&sfo());
     let output = input.inspect(true);
@@ -69,7 +112,7 @@ fn detects_sfo_by_magic_and_escapes_output() {
 #[test]
 fn malformed_unsupported_and_missing_inputs_exit_unsuccessfully() {
     for (data, message) in [
-        (b"\x7fPKG".as_slice(), "unsupported"),
+        (b"\x7fPKG".as_slice(), "malformed"),
         (b"\x7fCNT", "malformed"),
         (b"", "malformed"),
     ] {
@@ -113,7 +156,7 @@ fn conversion_rejects_unsupported_inputs_and_bad_options_without_output() {
 }
 
 #[test]
-fn extraction_rejects_ps3_before_creating_output() {
+fn extraction_rejects_truncated_ps3_before_creating_output() {
     let input = Input::new(b"\x7fPKG");
     let output = input.0.parent().unwrap().join("output");
     let result = Command::new(env!("CARGO_BIN_EXE_pkg-tools"))
@@ -128,7 +171,7 @@ fn extraction_rejects_ps3_before_creating_output() {
     assert!(
         String::from_utf8(result.stderr)
             .unwrap()
-            .contains("unsupported")
+            .contains("truncated")
     );
 }
 

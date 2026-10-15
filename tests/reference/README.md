@@ -1,5 +1,32 @@
 # Independent inspection oracle
 
+## PS3 container-plaintext oracle
+
+`ps3.py` independently parses PS3 headers/records/SFO and decodes the data region
+with OpenSSL AES-128-CTR (retail) or Python hashlib SHA-1 (debug). The format
+baseline is RPCS3 revision `6fe3c87fb41c29b21d8796b15eca5c80ad3b36d4`;
+this source-derived oracle does not run the RPCS3 installer or transform SDAT.
+It compares CLI inspection and every extracted path, size and SHA-256.
+Temporary disk use is approximately the encrypted-data size; RAM is bounded.
+
+```sh
+cargo build --release -p pkg-cli
+target/release/pkg-tools extract /path/to/game.pkg pkgs/ps3/extracted
+TMPDIR=/tmp/opencode python3 tests/reference/ps3.py \
+  /path/to/game.pkg pkgs/ps3/extracted target/release/pkg-tools \
+  --manifest pkgs/ps3/reference.json
+```
+
+Use trusted fixtures; this oracle is not a hardened package reader. The optional
+manifest destination must be new. Keep manifests and game contents under ignored
+`pkgs/`. On 2026-10-15 the supplied retail fixture matched **310 files and 22
+directories**, including all exposed headers, metadata packets and SFO records.
+Debug has synthetic coverage only. `tests/fixtures/ps3-debug.hex` is a tiny
+Python `struct`/`hashlib`-generated package, with one `PARAM.SFO` whose TITLE is
+`Synthetic`; it contains no game data. It is also used by CLI/GUI unit tests.
+
+## PS4 inspection oracle
+
 This optional test adapter compiles unmodified inspection-related sources from
 LibOrbisPkg revision `643477263b2644e0803e0f58b8726ea4e3f3b7d4` in an external
 checkout. Nothing upstream is vendored or linked into the Rust tools. The

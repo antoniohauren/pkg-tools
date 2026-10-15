@@ -1,6 +1,10 @@
 # Compatibility targets and format research
 
 Milestone 4 update: [native writer and executed reader checks](zarchive.md).
+Milestone 6 update: [implemented PS3 subset and verification](ps3.md). One retail
+fixture matches an independent source-derived Python/OpenSSL oracle; debug has
+synthetic coverage. The PS3 matrix below remains the original target, not a
+claim of upstream-installer or emulator validation.
 The historical ZArchive contract below is corrected by the pinned reader's
 extended-name decoding bug: supported components are limited to 127 UTF-8 bytes.
 Zero-payload archives remain rejected; synthetic >4 GiB readback now passes.

@@ -43,6 +43,7 @@ struct Ui {
     toasts: adw::ToastOverlay,
     path: RefCell<Option<PathBuf>>,
     busy: Cell<bool>,
+    can_convert: Cell<bool>,
 }
 
 impl Ui {
@@ -53,7 +54,7 @@ impl Ui {
         self.extract
             .set_sensitive(!busy && self.path.borrow().is_some());
         self.convert
-            .set_enabled(!busy && self.path.borrow().is_some());
+            .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
         self.spinner.set_opacity(if busy { 1.0 } else { 0.0 });
         self.spinner.set_tooltip_text(Some(label));
         self.spinner.set_spinning(busy);
@@ -120,7 +121,7 @@ impl Ui {
         let ui = self.clone();
         glib::spawn_future_local(async move {
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some("PS4 packages"));
+            filter.set_name(Some("PS3 / PS4 packages"));
             filter.add_pattern("*.pkg");
             filter.add_pattern("*.PKG");
             let all = gtk::FileFilter::new();
@@ -161,6 +162,7 @@ impl Ui {
             let result = gio::spawn_blocking(move || package::inspect(&input)).await;
             match result {
                 Ok(Ok(details)) => {
+                    ui.can_convert.set(details.can_convert);
                     ui.title.set_label(&details.title);
                     ui.title_id
                         .set_subtitle(&glib::markup_escape_text(&details.title_id));
@@ -368,7 +370,7 @@ impl Ui {
                         .map_err(|e| e.to_string())
                 } else {
                     package::extract(&source, &output, &cancellation, progress).map_err(|e| {
-                        if package::was_cancelled(&e) {
+                        if package::was_cancelled(e.as_ref()) {
                             format!("{e}\n\nIf a partial output folder was created, remove it before retrying. Existing files were not replaced.")
                         } else {
                             e.to_string()
@@ -460,6 +462,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         toasts: builder.object("toasts").unwrap(),
         path: RefCell::new(None),
         busy: Cell::new(false),
+        can_convert: Cell::new(false),
     });
     for button in [&ui.open, &ui.welcome_open] {
         button.connect_clicked(glib::clone!(
@@ -631,7 +634,8 @@ mod tests {
         assert!(!ui.convert.is_enabled());
         assert!(!ui.all_info.is_enabled());
         let path = std::env::var_os("PKG_TOOLS_TEST_PACKAGE")
-            .expect("Set PKG_TOOLS_TEST_PACKAGE to a valid PS4 package");
+            .expect("Set PKG_TOOLS_TEST_PACKAGE to a valid PS3 or PS4 game package");
+        let expected = package::inspect(std::path::Path::new(&path)).unwrap();
         let controllers = ui.window.upgrade().unwrap().observe_controllers();
         let drop_target = (0..controllers.n_items())
             .find_map(|i| {
@@ -665,14 +669,10 @@ mod tests {
         }
         assert_eq!(ui.path.borrow().as_ref(), Some(&PathBuf::from(&path)));
         assert!(ui.extract.is_sensitive());
-        assert!(ui.convert.is_enabled());
+        assert_eq!(ui.convert.is_enabled(), expected.can_convert);
         assert!(!ui.title.text().is_empty());
         assert_eq!(ui.pages.visible_child(), Some(ui.details.clone().upcast()));
-        let icon = ps4_pkg::Package::open(std::fs::File::open(&path).unwrap())
-            .unwrap()
-            .read_icon0()
-            .unwrap();
-        if icon.as_deref().is_some_and(package::valid_icon) {
+        if expected.icon.is_some() {
             assert!(ui.artwork.paintable().is_some());
         } else {
             assert_eq!(
@@ -684,7 +684,7 @@ mod tests {
         assert_ne!(ui.version.subtitle().as_deref(), Some("Unknown"));
         assert!(matches!(
             ui.kind.subtitle().as_deref(),
-            Some("Game" | "Patch")
+            Some("Game" | "Patch" | "Game data / patch")
         ));
         assert!(ui.all_info.is_enabled());
         ui.all_info.activate(None);

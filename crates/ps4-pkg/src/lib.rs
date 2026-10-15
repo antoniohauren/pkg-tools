@@ -68,7 +68,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(e) => Some(e),
-            Self::IncompleteExtraction { source, .. } => Some(source),
+            Self::IncompleteExtraction { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }
@@ -146,7 +146,7 @@ impl<R: Read + Seek> Package<R> {
         let mut magic = [0; 4];
         reader.read_exact(&mut magic)?;
         match &magic {
-            b"\x7fPKG" => return Err(Error::Unsupported("PS3 inspection is not implemented")),
+            b"\x7fPKG" => return Err(Error::Unsupported("PS3 input; use ps3-pkg instead")),
             b"\x7fCNT" => {}
             _ => return Err(Error::Malformed("bad magic")),
         }

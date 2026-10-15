@@ -1,9 +1,10 @@
 # PKG Tools
 
 Library-first Rust package tools with a CLI and a native GNOME application.
-PS4 header/SFO inspection and streaming FPKG base/full-update extraction are
-implemented. Extraction is verified on Linux
-against two local fixtures; see [coverage and format decisions](docs/extraction.md).
+PS3 retail/debug PKG inspection/extraction and PS4 FPKG inspection/extraction
+are implemented. PS3 retail extraction is checked against one local fixture;
+debug has synthetic coverage. PS4 extraction is verified against two local
+fixtures. See [PS3 support](docs/ps3.md) and [PS4 coverage](docs/extraction.md).
 
 ```sh
 cargo run -p pkg-cli -- inspect INPUT.pkg
@@ -15,7 +16,8 @@ cargo run --release -p pkg-cli -- convert GAME.pkg Game.zar
 cargo run --release -p pkg-cli -- convert GAME.pkg Game.zar --update UPDATE.pkg
 ```
 
-Inputs are detected by magic, not filename. Rust 1.89 or newer is required;
+`inspect` and `extract` accept PS3 and PS4 packages. Inputs are detected by magic,
+not filename. Rust 1.89 or newer is required;
 current checks used Rust 1.99 on Linux. `psf` is standard-library-only; `ps4-pkg`
 uses pure-Rust crypto/compression and safe Unix filesystem calls through `rustix`.
 The CLI uses `serde_json`. [Dependency decisions](docs/dependencies-and-fixtures.md).
@@ -36,7 +38,7 @@ and the error reports its location. See [conversion checks](docs/zarchive.md#pkg
 
 ## GNOME application
 
-`pkg-gtk` provides a native Rust GTK4/libadwaita interface, authored in
+`pkg-gtk` provides a native Rust GTK4/libadwaita interface for PS3 and PS4, authored in
 Blueprint. Overview shows game artwork, title, title ID, application version,
 game/patch type, package size, content ID and source. **All Info** in the
 hamburger menu opens a modal dialog containing headers,
@@ -77,6 +79,7 @@ the CLI and streams on a background worker with decoded-byte progress and Cancel
 Cancellation removes unpublished scratch archives. Preparation and final
 publication are not interruptible; if update publication fails after the base
 is complete, the error identifies the saved base archive.
+Conversion is PS4-only; the action is disabled for PS3 packages.
 
 Blueprint is compiled and embedded during the Cargo build; no external UI files
 are needed at runtime. Plain `cargo build` retains the library/CLI-only build;
@@ -114,6 +117,10 @@ glibc. Cross-distribution compatibility must be checked separately.
 
 ## Libraries
 
+- `ps3_pkg::Package::open(reader)` exposes `header()`, raw `metadata()`, sorted
+  `entries()`, `read_param_sfo()`, `read_icon0()`, and streaming `read_entry(index)`.
+  `extract`, `extract_with_cancel` and `extract_with_progress` write a new tree.
+  See [PS3 contracts and limits](docs/ps3.md).
 - `zarchive::Writer::create(output)` accepts `add_directory(path)` and
   `add_file(path, size, reader)` calls, parents first; `finish()` publishes.
   `zarchive::pack_directory(source, output)` packs a stable directory tree.
@@ -158,6 +165,9 @@ has a null decoded value rather than lossy substitution. `fpkg_status` remains
 
 ## Validation and limits
 
+The format-specific details below describe PS4; [PS3 validation and limits](docs/ps3.md)
+are documented separately. Both share the no-overwrite filesystem rules.
+
 - Extraction requires a **new** output directory with existing parents. It
   rejects symlinks in the destination path, traversal, special nodes, portable
   filename hazards, ASCII-case collisions and duplicate files. No merging or
@@ -197,7 +207,7 @@ cargo test --workspace
 ```
 
 The GUI also has an opt-in smoke test requiring a graphical session and a real
-PS4 package. It checks package loading, drag-and-drop, artwork, dialogs and
+PS3 or PS4 game package. It checks package loading, drag-and-drop, artwork, dialogs and
 progress/cancellation controls:
 
 ```sh
@@ -205,8 +215,8 @@ PKG_TOOLS_TEST_PACKAGE=/absolute/path/to/game.pkg \
   cargo test -p pkg-gtk blueprint_window_and_package_loading -- --ignored
 ```
 
-Twenty-nine tests pass in the default workspace suite; the graphical smoke test
-is ignored unless explicitly requested. Coverage includes parsing, bounded artwork,
+The graphical smoke test is ignored unless explicitly requested.
+Coverage includes parsing, bounded artwork,
 GUI metadata helpers, key recovery, crypto known answers, nested
 PFS/PFSC, direct/single/double-indirect reads, >4 GiB virtual files/offsets,
 corruption, path collisions, symlinks, overwrite refusal, cancellation, extraction
@@ -215,7 +225,7 @@ Both local PS4 base/full-update fixtures match reference paths, sizes and SHA-25
 4,583 files and 1,483 directories total. Header/SFO comparisons also pass. Reproduction:
 [reference comparison](tests/reference/README.md).
 
-PS3 and ZArchive remain later milestones. DLC, retail extraction, delta patches,
+PS4 DLC, PS4 retail extraction, delta patches,
 64-bit PFS inodes and per-file PFS compression are unsupported. No emulator or
 Windows/macOS compatibility claim follows from extraction results.
 

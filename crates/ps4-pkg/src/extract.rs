@@ -64,20 +64,7 @@ pub(crate) fn component(name: &str) -> Result<(), Error> {
     if !name.is_ascii() {
         return Err(Error::Unsupported("non-ASCII extraction path"));
     }
-    let stem = name.split('.').next().unwrap().to_ascii_uppercase();
-    if name.is_empty()
-        || name.len() > 255
-        || name == "."
-        || name == ".."
-        || name.ends_with(['.', ' '])
-        || name
-            .bytes()
-            .any(|b| b < 32 || b == 127 || b"/\\:<>\"|?*".contains(&b))
-        || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
-    {
+    if !pkg_fs::valid_component(name) {
         return Err(Error::UnsafePath(name.to_owned()));
     }
     Ok(())
@@ -558,24 +545,7 @@ mod tests {
 #[cfg(unix)]
 mod disk {
     use super::*;
-    use rustix::fs::{self, AtFlags, Mode, OFlags};
-    use std::{fs::File, io::Write, os::fd::OwnedFd, path::Component};
-    const DIR: OFlags = OFlags::RDONLY
-        .union(OFlags::DIRECTORY)
-        .union(OFlags::NOFOLLOW)
-        .union(OFlags::CLOEXEC);
-    const MARKER: &str = ".pkg-tools-incomplete";
-    fn open_dir(parent: &OwnedFd, name: &std::ffi::OsStr) -> io::Result<OwnedFd> {
-        Ok(fs::openat(parent, name, DIR, Mode::empty())?)
-    }
-    fn create_file(parent: &OwnedFd, name: &str) -> io::Result<File> {
-        Ok(File::from(fs::openat(
-            parent,
-            name,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )?))
-    }
+    use std::io::Write;
     pub(super) fn extract<R: Read + Seek>(
         game: &mut Game<R>,
         path: &Path,
@@ -591,46 +561,20 @@ mod disk {
         })?;
         let mut completed = 0;
         progress(0, total);
-        let mut parts = path.components().peekable();
-        let mut parent = fs::open(
-            if path.is_absolute() { "/" } else { "." },
-            DIR,
-            Mode::empty(),
-        )
-        .map_err(io::Error::from)?;
-        let name = loop {
-            match parts.next() {
-                Some(Component::RootDir | Component::CurDir) => {}
-                Some(Component::Normal(name)) if parts.peek().is_none() => break name,
-                Some(Component::Normal(name)) => parent = open_dir(&parent, name)?,
-                _ => return Err(Error::UnsafePath(path.display().to_string())),
-            }
-        };
-        fs::mkdirat(&parent, name, Mode::RWXU).map_err(io::Error::from)?;
+        let output = pkg_fs::Output::create(path)?;
         let result = (|| -> Result<(), Error> {
-            let root = open_dir(&parent, name)?;
-            create_file(&root, MARKER)?
-                .write_all(b"Extraction incomplete. Remove this tree before retrying.\n")?;
+            output.mark_incomplete()?;
             let mut buffer = [0; 65536];
             for index in 0..game.entries.len() {
                 if cancelled() {
                     return Err(Error::Cancelled);
                 }
                 let e = &game.entries[index];
-                let mut parts = e.path.split('/').peekable();
-                let mut dir = rustix::io::dup(&root).map_err(io::Error::from)?;
-                let name = loop {
-                    let name = parts.next().unwrap();
-                    if parts.peek().is_none() {
-                        break name;
-                    }
-                    dir = open_dir(&dir, name.as_ref())?;
-                };
                 if e.kind == FileKind::Directory {
-                    fs::mkdirat(&dir, name, Mode::RWXU).map_err(io::Error::from)?;
+                    output.create_directory(&e.path)?;
                 } else {
                     let size = e.size;
-                    let mut out = create_file(&dir, name)?;
+                    let mut out = output.create_file(&e.path)?;
                     let mut reader = game.read_entry(index)?;
                     let mut written = 0;
                     loop {
@@ -658,7 +602,7 @@ mod disk {
             if cancelled() {
                 return Err(Error::Cancelled);
             }
-            fs::unlinkat(&root, MARKER, AtFlags::empty()).map_err(io::Error::from)?;
+            output.finish()?;
             Ok(())
         })();
         result.map_err(|source| Error::IncompleteExtraction {

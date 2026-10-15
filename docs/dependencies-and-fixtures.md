@@ -5,6 +5,21 @@ Research date: 2026-10-13. Format requirements and reference pins belong in
 or a blanket claim of package support. Milestone 3 selects the extraction
 dependencies below; the later candidate table retains historical research.
 
+## Milestone 6 PS3 dependency selection
+
+`ps3-pkg` reuses `aes` **0.9.3** and adds RustCrypto `sha1` **0.11.0**, defaults
+disabled, for the debug format's SHA-1-derived stream. The reviewed crate is
+MIT OR Apache-2.0, MSRV 1.85; its `digest` 0.11, `cfg-if` and `cpufeatures`
+dependencies are already resolved by the workspace. No native crypto dependency
+is introduced. Retail random reads compose AES blocks with the format's
+big-endian counter, avoiding an additional CTR dependency. SHA-1 is a format
+requirement, not a choice for new integrity protection.
+
+`pkg-fs` now owns the already-selected Unix `rustix` dependency and shares
+descriptor-relative output creation and portable filename policy between PS3
+and PS4. Production dependencies remain independent of reference tooling;
+OpenSSL is used only by the optional PS3 test oracle.
+
 ## Milestone 4 dependency selection
 
 `zarchive` selects `ruzstd` **0.9.1**, defaults disabled, `std` only, and the

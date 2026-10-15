@@ -187,8 +187,8 @@ update subset and checked on Linux. Research and implementation notes:
 The workspace contains `psf`, `ps4-pkg`, and `pkg-cli`. Inspection remains
 `pkg-tools inspect INPUT [--json]`; extraction adds
 `pkg-tools extract INPUT.pkg OUTPUT_DIR`. Library consumers can enumerate
-application entries and borrow streaming `Read + Seek` readers. PS3 is detected
-and explicitly unsupported. Safe disk extraction currently requires Unix.
+application entries and borrow streaming `Read + Seek` readers. PS3 support is
+now implemented as described below. Safe disk extraction currently requires Unix.
 
 Both local fixtures match reference extraction: 4,583 files, 1,483 directories,
 all paths/sizes/SHA-256. Metadata inspection also matches 44 container records
@@ -218,3 +218,12 @@ PFS variants, Windows/macOS verification. DLC/delta/retail extraction and per-fi
 PFS compression are explicitly unsupported. Emulator/runtime and base/update/DLC
 conversion checks remain open. The earlier pure-Rust Zstandard frame experiment
 is not ZArchive validation.
+
+Milestone 6 implementation is available: `ps3-pkg` supports normal PS3 retail
+and debug container inspection/extraction through CLI and GTK. Both platforms
+reuse `pkg-fs` filename/output safeguards. The supplied retail fixture matches
+an independent source-derived Python/OpenSSL oracle: 310 files, 22 directories,
+all paths/sizes/SHA-256 plus headers, metadata and SFO. Debug coverage is synthetic;
+real debug fixture and direct upstream-tool comparison remain exit gates.
+See [PS3 contract and verification](docs/ps3.md). PS3-to-ZAR and package creation
+remain outside this milestone.

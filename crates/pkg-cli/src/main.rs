@@ -55,6 +55,34 @@ fn inspect(file: File) -> Result<Value, Box<dyn Error>> {
             .read_to_end(&mut data)?;
         return Ok(json!({"format": "sfo", "sfo": sfo_json(&data)?}));
     }
+    if magic == *b"\x7fPKG" {
+        let mut pkg = ps3_pkg::Package::open(reader)?;
+        let sfo = match pkg.read_param_sfo()? {
+            Some(data) => sfo_json(&data)?,
+            None => json!({"status": "missing"}),
+        };
+        let h = pkg.header();
+        let content_id = h.content_id.split(|b| *b == 0).next().unwrap();
+        let entries: Vec<_> = pkg.entries().iter().map(|e| json!({
+            "path": e.path(), "offset": e.offset(), "size": e.size(), "flags": e.flags(),
+            "kind": if e.kind() == ps3_pkg::FileKind::Directory { "directory" } else { "file" }
+        })).collect();
+        let metadata: Vec<_> = pkg
+            .metadata()
+            .iter()
+            .map(|m| json!({"id": m.id, "raw_hex": hex(&m.data)}))
+            .collect();
+        return Ok(
+            json!({"format": "ps3-pkg", "sfo": sfo, "authentication": "unverified",
+            "header": {"release_type": h.release_type, "platform": h.platform,
+                "content_id": std::str::from_utf8(content_id).ok(), "content_id_hex": hex(&h.content_id),
+                "package_size": h.package_size, "entry_count": h.entry_count,
+                "metadata_offset": h.metadata_offset, "metadata_count": h.metadata_count, "metadata_size": h.metadata_size,
+                "data_offset": h.data_offset, "data_size": h.data_size,
+                "qa_digest_hex": hex(&h.qa_digest), "nonce_hex": hex(&h.nonce)},
+            "metadata": metadata, "entries": entries}),
+        );
+    }
     let mut pkg = ps4_pkg::Package::open(reader)?;
     let sfo = match pkg.read_param_sfo() {
         Ok(Some(data)) => sfo_json(&data)?,
@@ -88,16 +116,30 @@ fn inspect(file: File) -> Result<Value, Box<dyn Error>> {
 fn human(out: &mut impl Write, doc: &Value) -> io::Result<()> {
     writeln!(out, "Format: {}", doc["format"].as_str().unwrap())?;
     if let Some(h) = doc.get("header") {
-        writeln!(out, "FPKG: unverified (key recovery not performed)")?;
+        if doc["format"] == "ps4-pkg" {
+            writeln!(out, "FPKG: unverified (key recovery not performed)")?;
+        }
         writeln!(out, "Content ID: {}", h["content_id"])?;
         writeln!(out, "Package size: {} bytes", h["package_size"])?;
-        writeln!(
-            out,
-            "Content type: {:#x}; flags: {:#x}",
-            h["content_type"].as_u64().unwrap(),
-            h["content_flags"].as_u64().unwrap()
-        )?;
-        writeln!(out, "Container entries: {}", h["entry_count"])?;
+        if doc["format"] == "ps4-pkg" {
+            writeln!(
+                out,
+                "Content type: {:#x}; flags: {:#x}",
+                h["content_type"].as_u64().unwrap(),
+                h["content_flags"].as_u64().unwrap()
+            )?;
+        } else {
+            writeln!(
+                out,
+                "Release: {}; signatures unverified",
+                if h["release_type"] == 0x8000 {
+                    "retail"
+                } else {
+                    "debug"
+                }
+            )?;
+        }
+        writeln!(out, "Package entries: {}", h["entry_count"])?;
     }
     let sfo = &doc["sfo"];
     writeln!(out, "SFO: {}", sfo["status"].as_str().unwrap())?;
@@ -147,10 +189,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if args.len() == 3 && args[0] == "extract" {
-        let mut game =
-            ps4_pkg::Package::open(BufReader::new(File::open(&args[1])?))?.open_game()?;
-        eprintln!("Extracting {} application entries...", game.entries().len());
-        game.extract(&args[2])?;
+        let mut reader = BufReader::new(File::open(&args[1])?);
+        let mut magic = [0; 4];
+        reader.read_exact(&mut magic)?;
+        reader.rewind()?;
+        if magic == *b"\x7fPKG" {
+            let mut pkg = ps3_pkg::Package::open(reader)?;
+            eprintln!("Extracting {} application entries...", pkg.entries().len());
+            pkg.extract(&args[2])?;
+        } else {
+            let mut game = ps4_pkg::Package::open(reader)?.open_game()?;
+            eprintln!("Extracting {} application entries...", game.entries().len());
+            game.extract(&args[2])?;
+        }
         eprintln!(
             "Extraction complete: {}",
             std::path::Path::new(&args[2]).display()
