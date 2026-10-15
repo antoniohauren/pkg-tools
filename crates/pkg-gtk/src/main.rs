@@ -19,6 +19,10 @@ struct Ui {
     welcome_open: gtk::Button,
     extract: gtk::Button,
     convert: gio::SimpleAction,
+    link_rap: gio::SimpleAction,
+    liberate: gio::SimpleAction,
+    rap_source: adw::ActionRow,
+    rap: RefCell<Option<PathBuf>>,
     pages: gtk::Stack,
     details: gtk::Box,
     info_dialog: adw::Dialog,
@@ -46,6 +50,13 @@ struct Ui {
     can_convert: Cell<bool>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    Extract,
+    Convert,
+    Liberate,
+}
+
 impl Ui {
     fn busy(&self, busy: bool, label: &str) {
         self.busy.set(busy);
@@ -55,6 +66,9 @@ impl Ui {
             .set_sensitive(!busy && self.path.borrow().is_some());
         self.convert
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
+        let ps3 = self.path.borrow().is_some() && !self.can_convert.get();
+        self.link_rap.set_enabled(!busy && ps3);
+        self.liberate.set_enabled(!busy);
         self.spinner.set_opacity(if busy { 1.0 } else { 0.0 });
         self.spinner.set_tooltip_text(Some(label));
         self.spinner.set_spinning(busy);
@@ -163,6 +177,9 @@ impl Ui {
             match result {
                 Ok(Ok(details)) => {
                     ui.can_convert.set(details.can_convert);
+                    *ui.rap.borrow_mut() = None;
+                    ui.rap_source.set_subtitle("None");
+                    ui.rap_source.set_visible(!details.can_convert);
                     ui.title.set_label(&details.title);
                     ui.title_id
                         .set_subtitle(&glib::markup_escape_text(&details.title_id));
@@ -204,16 +221,254 @@ impl Ui {
         });
     }
 
-    fn choose_destination(self: &Rc<Self>, converting: bool) {
+    fn choose_rap(self: &Rc<Self>) {
+        if self.busy.get() {
+            return;
+        }
+        self.busy(true, "Choose a RAP file…");
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("RAP license files"));
+            filter.add_pattern("*.rap");
+            filter.add_pattern("*.RAP");
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            let dialog = gtk::FileDialog::builder()
+                .title("Link RAP to PS3 Package")
+                .filters(&filters)
+                .build();
+            match dialog.open_future(ui.window.upgrade().as_ref()).await {
+                Ok(file) => {
+                    if let Some(path) = file.path() {
+                        let input = path.clone();
+                        match gio::spawn_blocking(move || {
+                            package::read_rap(&input)
+                                .map(|_| ())
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        {
+                            Ok(Ok(())) => {
+                                ui.rap_source.set_subtitle(&glib::markup_escape_text(
+                                    &path.display().to_string(),
+                                ));
+                                *ui.rap.borrow_mut() = Some(path);
+                            }
+                            Ok(Err(e)) => ui.error("Could Not Link RAP", &e),
+                            Err(_) => ui.error(
+                                "Could Not Link RAP",
+                                "The background worker stopped unexpectedly.",
+                            ),
+                        }
+                    } else {
+                        ui.error("Local File Required", "Choose a local RAP file.");
+                    }
+                }
+                Err(e) if e.matches(gtk::DialogError::Dismissed) => {}
+                Err(e) => ui.error("Could Not Link RAP", &e.to_string()),
+            }
+            ui.busy(false, "");
+        });
+    }
+
+    fn choose_liberation(self: &Rc<Self>) {
+        if self.busy.get() {
+            return;
+        }
+        self.busy(true, "Choose liberation source…");
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            let dialog = adw::AlertDialog::builder()
+                .heading("Liberate")
+                .body("Choose a PS3 PKG or an extracted game folder. Then save liberated files as a new folder or PKG.")
+                .build();
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("folder", "Extracted Folder…");
+            dialog.add_response("pkg", "Choose PKG…");
+            if ui.path.borrow().is_some() && !ui.can_convert.get() {
+                dialog.add_response("loaded", "Use Loaded PKG");
+            }
+            dialog.set_close_response("cancel");
+            let choice = dialog.choose_future(ui.window.upgrade().as_ref()).await;
+            let source = match choice.as_str() {
+                "loaded" => ui.path.borrow().clone().unwrap(),
+                "pkg" | "folder" => {
+                    let picker = gtk::FileDialog::builder()
+                        .title("Liberate — Choose Source")
+                        .build();
+                    let selection = if choice == "folder" {
+                        picker
+                            .select_folder_future(ui.window.upgrade().as_ref())
+                            .await
+                    } else {
+                        let filter = gtk::FileFilter::new();
+                        filter.set_name(Some("PS3 packages"));
+                        filter.add_pattern("*.pkg");
+                        filter.add_pattern("*.PKG");
+                        let filters = gio::ListStore::new::<gtk::FileFilter>();
+                        filters.append(&filter);
+                        picker.set_filters(Some(&filters));
+                        picker.open_future(ui.window.upgrade().as_ref()).await
+                    };
+                    match selection {
+                        Ok(file) => match file.path() {
+                            Some(path) => path,
+                            None => {
+                                ui.busy(false, "");
+                                ui.error("Local Source Required", "Choose a local PKG or folder.");
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            ui.busy(false, "");
+                            if !e.matches(gtk::DialogError::Dismissed) {
+                                ui.error("Could Not Choose Source", &e.to_string());
+                            }
+                            return;
+                        }
+                    }
+                }
+                _ => {
+                    ui.busy(false, "");
+                    return;
+                }
+            };
+            let input = source.clone();
+            let result = gio::spawn_blocking(move || {
+                let id = package::liberation_content_id(&input)?;
+                let rap = package::find_rap(&input, &id);
+                Ok::<_, String>((id, rap))
+            })
+            .await;
+            let (id, detected) = match result {
+                Ok(Ok(value)) => value,
+                other => {
+                    ui.busy(false, "");
+                    let error = match other {
+                        Ok(Err(e)) => e,
+                        _ => "The background worker stopped unexpectedly.".into(),
+                    };
+                    ui.error("Could Not Read Source", &error);
+                    return;
+                }
+            };
+            let linked = if ui.path.borrow().as_ref() == Some(&source) {
+                ui.rap.borrow().clone()
+            } else {
+                None
+            };
+            let note = detected.as_ref().err().cloned().unwrap_or_default();
+            let mut rap = linked.or_else(|| detected.ok().flatten());
+            let dialog = adw::AlertDialog::builder().heading("Liberate — Link RAP")
+                .body(format!("{}\n\nContent ID: {id}\n\n{}\n{note}", source.display(),
+                    rap.as_ref().map(|p| format!("RAP: {}", p.display())).unwrap_or_else(||
+                        "No matching RAP found beside the source or in its exdata folder. Link a RAP to continue.".into())))
+                .build();
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("link", "Link RAP…");
+            dialog.add_response("continue", "Continue");
+            dialog.set_response_enabled("continue", rap.is_some());
+            dialog.set_response_appearance("continue", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some(if rap.is_some() { "continue" } else { "link" }));
+            dialog.set_close_response("cancel");
+            match dialog
+                .choose_future(ui.window.upgrade().as_ref())
+                .await
+                .as_str()
+            {
+                "continue" => {}
+                "link" => {
+                    let filter = gtk::FileFilter::new();
+                    filter.set_name(Some("RAP license files"));
+                    filter.add_pattern("*.rap");
+                    filter.add_pattern("*.RAP");
+                    let filters = gio::ListStore::new::<gtk::FileFilter>();
+                    filters.append(&filter);
+                    let picker = gtk::FileDialog::builder()
+                        .title("Link RAP")
+                        .filters(&filters)
+                        .build();
+                    match picker.open_future(ui.window.upgrade().as_ref()).await {
+                        Ok(file) => rap = file.path(),
+                        Err(e) => {
+                            ui.busy(false, "");
+                            if !e.matches(gtk::DialogError::Dismissed) {
+                                ui.error("Could Not Link RAP", &e.to_string());
+                            }
+                            return;
+                        }
+                    }
+                }
+                _ => {
+                    ui.busy(false, "");
+                    return;
+                }
+            }
+            ui.busy(false, "");
+            if rap.is_none() {
+                ui.error("Local File Required", "Choose a local RAP file.");
+                return;
+            }
+            ui.destination_from(Operation::Liberate, source, rap);
+        });
+    }
+
+    fn choose_destination(self: &Rc<Self>, operation: Operation) {
         if self.busy.get() {
             return;
         }
         let Some(source) = self.path.borrow().clone() else {
             return;
         };
+        let rap = self.rap.borrow().clone();
+        self.destination_from(operation, source, rap);
+    }
+
+    fn destination_from(
+        self: &Rc<Self>,
+        operation: Operation,
+        source: PathBuf,
+        rap: Option<PathBuf>,
+    ) {
+        let converting = operation == Operation::Convert;
+        let liberating = operation == Operation::Liberate;
+        if self.busy.get() {
+            return;
+        }
+        if liberating && rap.is_none() {
+            return;
+        }
         self.busy(true, "Choose a destination…");
         let ui = self.clone();
         glib::spawn_future_local(async move {
+            let directory = if liberating {
+                let dialog = adw::AlertDialog::builder()
+                    .heading("Liberate — Output")
+                    .body("Save liberated files directly into a new folder, or repack them into a PKG. Folder output creates a new -liberated folder inside your chosen destination.")
+                    .build();
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("pkg", "PKG…");
+                dialog.add_response("folder", "Folder…");
+                dialog.set_response_appearance("folder", adw::ResponseAppearance::Suggested);
+                dialog.set_default_response(Some("folder"));
+                dialog.set_close_response("cancel");
+                match dialog
+                    .choose_future(ui.window.upgrade().as_ref())
+                    .await
+                    .as_str()
+                {
+                    "folder" => true,
+                    "pkg" => false,
+                    _ => {
+                        ui.busy(false, "");
+                        return;
+                    }
+                }
+            } else {
+                false
+            };
+            let saving_file = converting || (liberating && !directory);
             let mut update = None;
             if converting {
                 let dialog = adw::AlertDialog::builder()
@@ -272,24 +527,42 @@ impl Ui {
             let dialog = gtk::FileDialog::builder()
                 .title(if converting {
                     "Save ZAR Archive"
+                } else if directory {
+                    "Choose Liberation Parent Folder"
+                } else if liberating {
+                    "Save Liberated PKG"
                 } else {
                     "Choose Extraction Parent Folder"
                 })
                 .accept_label(if converting {
                     "Convert"
+                } else if liberating {
+                    "Liberate"
                 } else {
                     "Extract Here"
                 })
                 .build();
-            let selection = if converting {
-                dialog.set_initial_name(Some(
+            let selection = if saving_file {
+                let name = if liberating {
+                    format!(
+                        "{}-liberated.pkg",
+                        (if source.is_dir() {
+                            source.file_name()
+                        } else {
+                            source.file_stem()
+                        })
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                    )
+                } else {
                     source
                         .with_extension("zar")
                         .file_name()
                         .unwrap()
                         .to_string_lossy()
-                        .as_ref(),
-                ));
+                        .into_owned()
+                };
+                dialog.set_initial_name(Some(&name));
                 dialog.save_future(ui.window.upgrade().as_ref()).await
             } else {
                 dialog
@@ -311,14 +584,25 @@ impl Ui {
                 ui.error("Local Folder Required", "Choose a local destination.");
                 return;
             };
-            let destination = if converting {
+            let destination = if saving_file {
                 parent
+            } else if directory {
+                let name = if source.is_dir() {
+                    source.file_name()
+                } else {
+                    source.file_stem()
+                }
+                .unwrap_or_default()
+                .to_string_lossy();
+                parent.join(format!("{name}-liberated"))
             } else {
                 package::destination(&source, &parent)
             };
             ui.busy(
                 true,
-                if converting {
+                if liberating {
+                    "Liberating…"
+                } else if saving_file {
                     "Converting package…"
                 } else {
                     "Extracting package…"
@@ -326,6 +610,8 @@ impl Ui {
             );
             ui.extraction_dialog.set_title(if converting {
                 "Converting to ZAR"
+            } else if liberating {
+                "Liberating"
             } else {
                 "Extracting Package"
             });
@@ -368,6 +654,12 @@ impl Ui {
                     pkg_cli::convert::run_with_progress(&source, &output, update.as_deref(),
                         || cancellation.load(Ordering::Relaxed), progress)
                         .map_err(|e| e.to_string())
+                } else if liberating {
+                    package::liberate(&source, rap.as_ref().unwrap(), &output, directory, &cancellation, progress).map_err(|e| {
+                        if matches!(e.downcast_ref::<ps3_pkg::Error>(), Some(ps3_pkg::Error::IncompleteExtraction { .. })) {
+                            format!("{e}\n\nRemove the incomplete output folder before retrying. Existing files were not replaced.")
+                        } else { e.to_string() }
+                    })
                 } else {
                     package::extract(&source, &output, &cancellation, progress).map_err(|e| {
                         if package::was_cancelled(e.as_ref()) {
@@ -385,7 +677,9 @@ impl Ui {
             match result {
                 Ok(Ok(())) => {
                     let dialog = adw::AlertDialog::builder()
-                        .heading(if converting {
+                        .heading(if liberating {
+                            "Liberation Complete"
+                        } else if saving_file {
                             "Conversion Complete"
                         } else {
                             "Extraction Complete"
@@ -397,7 +691,7 @@ impl Ui {
                     dialog.set_default_response(Some("show"));
                     dialog.set_close_response("close");
                     if dialog.choose_future(ui.window.upgrade().as_ref()).await == "show" {
-                        let folder = if converting {
+                        let folder = if saving_file {
                             destination.parent().unwrap().to_path_buf()
                         } else {
                             destination
@@ -409,7 +703,9 @@ impl Ui {
                     }
                 }
                 Ok(Err(e)) => ui.error(
-                    if converting {
+                    if liberating {
+                        "Liberation Stopped"
+                    } else if saving_file {
                         "Conversion Stopped"
                     } else {
                         "Extraction Stopped"
@@ -438,6 +734,10 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         welcome_open: builder.object("welcome_open").unwrap(),
         extract: builder.object("extract").unwrap(),
         convert: gio::SimpleAction::new("convert", None),
+        link_rap: gio::SimpleAction::new("link-rap", None),
+        liberate: gio::SimpleAction::new("liberate", None),
+        rap_source: builder.object("rap_source").unwrap(),
+        rap: RefCell::new(None),
         pages: builder.object("pages").unwrap(),
         details: builder.object("details").unwrap(),
         info_dialog: builder.object("info_dialog").unwrap(),
@@ -501,15 +801,29 @@ fn build(app: &adw::Application) -> Rc<Ui> {
     ui.extract.connect_clicked(glib::clone!(
         #[weak]
         ui,
-        move |_| ui.choose_destination(false)
+        move |_| ui.choose_destination(Operation::Extract)
     ));
     ui.convert.set_enabled(false);
     ui.convert.connect_activate(glib::clone!(
         #[weak]
         ui,
-        move |_, _| ui.choose_destination(true)
+        move |_, _| ui.choose_destination(Operation::Convert)
     ));
     window.add_action(&ui.convert);
+    ui.link_rap.set_enabled(false);
+    ui.link_rap.connect_activate(glib::clone!(
+        #[weak]
+        ui,
+        move |_, _| ui.choose_rap()
+    ));
+    window.add_action(&ui.link_rap);
+    ui.liberate.set_enabled(true);
+    ui.liberate.connect_activate(glib::clone!(
+        #[weak]
+        ui,
+        move |_, _| ui.choose_liberation()
+    ));
+    window.add_action(&ui.liberate);
     let open = gio::SimpleAction::new("open", None);
     ui.all_info.set_enabled(false);
     ui.all_info.connect_activate(glib::clone!(
@@ -632,7 +946,55 @@ mod tests {
         let ui = build(&app);
         assert!(!ui.extract.is_sensitive());
         assert!(!ui.convert.is_enabled());
+        assert!(!ui.link_rap.is_enabled());
+        assert!(ui.liberate.is_enabled());
         assert!(!ui.all_info.is_enabled());
+        ui.liberate.activate(None);
+        let context = glib::MainContext::default();
+        while ui.window.upgrade().unwrap().visible_dialog().is_none() {
+            context.iteration(true);
+        }
+        let dialog = ui
+            .window
+            .upgrade()
+            .unwrap()
+            .visible_dialog()
+            .unwrap()
+            .downcast::<adw::AlertDialog>()
+            .unwrap();
+        assert_eq!(dialog.heading().as_deref(), Some("Liberate"));
+        assert!(dialog.has_response("pkg"));
+        assert!(dialog.has_response("folder"));
+        assert!(!dialog.has_response("loaded"));
+        assert!(dialog.close());
+        while ui.busy.get() {
+            context.iteration(true);
+        }
+        assert!(ui.liberate.is_enabled());
+        ui.destination_from(
+            Operation::Liberate,
+            PathBuf::from("game.pkg"),
+            Some(PathBuf::from("license.rap")),
+        );
+        while ui.window.upgrade().unwrap().visible_dialog().is_none() {
+            context.iteration(true);
+        }
+        let dialog = ui
+            .window
+            .upgrade()
+            .unwrap()
+            .visible_dialog()
+            .unwrap()
+            .downcast::<adw::AlertDialog>()
+            .unwrap();
+        assert_eq!(dialog.heading().as_deref(), Some("Liberate — Output"));
+        assert!(dialog.has_response("pkg"));
+        assert!(dialog.has_response("folder"));
+        assert_eq!(dialog.default_response().as_deref(), Some("folder"));
+        assert!(dialog.close());
+        while ui.busy.get() {
+            context.iteration(true);
+        }
         let path = std::env::var_os("PKG_TOOLS_TEST_PACKAGE")
             .expect("Set PKG_TOOLS_TEST_PACKAGE to a valid PS3 or PS4 game package");
         let expected = package::inspect(std::path::Path::new(&path)).unwrap();
@@ -670,6 +1032,24 @@ mod tests {
         assert_eq!(ui.path.borrow().as_ref(), Some(&PathBuf::from(&path)));
         assert!(ui.extract.is_sensitive());
         assert_eq!(ui.convert.is_enabled(), expected.can_convert);
+        assert_eq!(ui.link_rap.is_enabled(), !expected.can_convert);
+        assert_eq!(ui.rap_source.is_visible(), !expected.can_convert);
+        assert!(ui.liberate.is_enabled());
+        if !expected.can_convert {
+            *ui.rap.borrow_mut() = Some(PathBuf::from("test.rap"));
+            ui.busy(false, "");
+            assert!(ui.liberate.is_enabled());
+            ui.busy(true, "Converting…");
+            assert!(!ui.liberate.is_enabled());
+            assert!(!ui.link_rap.is_enabled());
+            ui.busy(false, "");
+            ui.load(file.clone());
+            while ui.busy.get() {
+                context.iteration(true);
+            }
+            assert!(ui.rap.borrow().is_none());
+            assert!(ui.liberate.is_enabled());
+        }
         assert!(!ui.title.text().is_empty());
         assert_eq!(ui.pages.visible_child(), Some(ui.details.clone().upcast()));
         if expected.icon.is_some() {

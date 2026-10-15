@@ -7,6 +7,14 @@ menu main_menu {
       label: "Convert to ZAR…";
       action: "win.convert";
     }
+    item {
+      label: "Link RAP…";
+      action: "win.link-rap";
+    }
+    item {
+      label: "Liberate…";
+      action: "win.liberate";
+    }
   }
   section {
     item {
@@ -124,6 +132,7 @@ Adw.ApplicationWindow window {
                       Adw.ActionRow size { title: "Package size"; subtitle-selectable: true; }
                       Adw.ActionRow content_id { title: "Content ID"; subtitle-selectable: true; }
                       Adw.ActionRow source { title: "Source"; subtitle-selectable: true; }
+                      Adw.ActionRow rap_source { title: "Linked RAP"; subtitle: "None"; subtitle-selectable: true; visible: false; }
                     }
                     Gtk.Label {
                       label: "Extraction creates a new folder inside your chosen destination. Existing files are never replaced.";
