@@ -15,9 +15,40 @@ Target Linux first, with portable implementations and subsequent Windows/macOS v
 - Bounded-memory processing suitable for large games.
 - No dependency on the original Windows tools or a C++ ZArchive wrapper.
 
-Outside the MVP: PS4 retail package extraction, PKG creation, GP4 projects, GUI, executable patching/backporting, and PS3-to-ZAR conversion.
+Outside the MVP: PS4 retail package extraction, PKG creation, GP4 projects, SFO editing, trophy authoring, PSX/PS2-FPKG builder integration, executable patching/backporting, and PS3-to-ZAR conversion. The native GNOME GUI was originally outside the MVP and has since been implemented.
 
 Package extraction and executable decryption are distinct operations. ZAR conversion preserves supported input contents; it does not guarantee that arbitrary executables will run in shadPS4.
+
+## Post-MVP backlog
+
+These are future candidates, not requirements for completing the current MVP.
+Package-authoring work should start with PKG creation and GP4 support, followed
+by SFO editing. Each feature needs its own format investigation and reference
+compatibility checks before support is claimed.
+
+- **PKG creation and repacking:** build PS4 FPKGs from application directories;
+  rebuild extracted base games and full updates.
+- **GP4 projects:** generate, read, and write base/update projects, including
+  selecting the base application PKG when building an update.
+- **Build compatibility:** preserve required base-game keystones across rebuilds
+  and failures, prevent accidental inclusion in updates, validate packages over
+  100 GB, and investigate minimum-firmware metadata behavior against CyB1K's
+  patched tools. Metadata changes alone do not backport executables.
+- **PARAM.SFO editing:** edit and serialize metadata with validation, preserving
+  unknown fields where possible.
+- **Trophy authoring:** create/edit trophy resources and build TRP files.
+- **PSX/PS2-FPKG integration:** support package-building workflows used by
+  PSX-FPKG and PS2-FPKG tools; this does not imply implementing emulation.
+- **PS4 retail extraction:** investigate required decryption material and define
+  supported inputs separately from fake-package extraction.
+- **Executable decryption/patching/backporting:** scope separately from container
+  extraction and metadata editing.
+- **PS3-to-ZAR conversion:** establish a concrete consumer and archive layout
+  before implementation; current shadPS4 conversion targets PS4 only.
+
+Comparison reference: [CyB1K's PS4 Fake PKG Tools 3.87](https://github.com/CyB1K/PS4-Fake-PKG-Tools-3.87).
+Its repository listing and README establish workflow targets, not verified
+option-level parity; the Windows binaries have not been run for this comparison.
 
 ## Workspace
 
@@ -169,7 +200,19 @@ inputs, path/overwrite/symlink protection, incomplete output, block indirection
 and >4 GiB virtual files/offsets. See [usage](README.md) and
 [reference reproduction](tests/reference/README.md).
 
-Next: milestone 4, native Rust ZArchive writing and independent reader checks.
+Milestone 4 is implemented: native `zarchive::Writer`, directory-to-archive
+`pkg-tools pack INPUT_DIR OUTPUT.zar`, disk-spilled chunk indexes and atomic
+no-overwrite publication. Pinned upstream-reader enumeration/full-byte/random-read
+checks pass, including a synthetic >4 GiB file; footer SHA-256 is independently
+verified. Reader compatibility requires a 127-byte UTF-8 component limit and
+rejecting wholly zero-payload archives. See [writer contract](docs/zarchive.md).
+
+Milestone 5 direct streaming conversion is implemented in the CLI:
+`convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]`. Paired inputs require matching
+title/content IDs and gd/gp categories; outputs use separate base/update archives.
+Both supplied fixtures pass upstream-reader full-byte/random-read comparisons
+against their verified extracted trees. Recognition/loading in pinned shadPS4
+remains the milestone 5 exit gate; see [conversion contract](docs/zarchive.md#pkg-conversion).
 Remaining extraction coverage gates: real >4 GiB files, data DLC, additional
 PFS variants, Windows/macOS verification. DLC/delta/retail extraction and per-file
 PFS compression are explicitly unsupported. Emulator/runtime and base/update/DLC

@@ -5,7 +5,18 @@ Research date: 2026-10-13. Format requirements and reference pins belong in
 or a blanket claim of package support. Milestone 3 selects the extraction
 dependencies below; the later candidate table retains historical research.
 
-## Milestone 3 dependency selection
+## Milestone 4 dependency selection
+
+`zarchive` selects `ruzstd` **0.9.1**, defaults disabled, `std` only, and the
+already-selected `sha2` **0.11.1** with defaults disabled. The previously reviewed
+MIT-licensed pure-Rust encoder adds no normal transitive dependencies. Only its
+implemented `Fastest` mode is used. Full archive tests now pass against the
+pinned upstream reader; [writer results](zarchive.md) include synthetic throughput
+and >4 GiB readback. No native compression dependency enters production.
+An exact-version OSV query for `ruzstd` 0.9.1 on 2026-10-15 returned no advisories;
+this supplements the prior manifest/license review, not a source security audit.
+
+## Milestone 3 extraction dependencies
 
 `ps4-pkg` selects the reviewed pure-Rust versions/features from the table below:
 `aes` 0.9.3, `cbc` 0.2.1 (`block-padding`), `xts-mode` 0.6.0, `sha2` 0.11.1,

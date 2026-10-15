@@ -103,3 +103,18 @@ and SHA-256 matched. Both use encrypted signed S32 outer PFS, unsigned D32 inner
 PFS and 64 KiB PFSC blocks. Original fingerprints and manifests stay in `pkgs/`.
 No fixture with a real >4 GiB file was available; virtual Rust tests cover those
 offsets/lengths. Other variants and emulator compatibility remain unverified.
+# ZArchive writer interoperability
+
+Requires C++17 compiler and system libzstd development files (test-only):
+
+```sh
+git clone https://github.com/Exzap/ZArchive.git /tmp/opencode/zarchive-reference
+git -C /tmp/opencode/zarchive-reference checkout 965b66c8d67b6b7e30fd63b3b75aa91a99ff303b
+python3 tests/reference/check-zarchive.py /tmp/opencode/zarchive-reference
+python3 tests/reference/check-zarchive.py /tmp/opencode/zarchive-reference --large
+```
+
+The script checks the revision and tracked reader source cleanliness, builds the
+Rust release CLI and original upstream reader, and generates disposable fixtures.
+`--large` streams a sparse-generated >4 GiB file through both implementations.
+No game data is required. See [results and reader limits](../../docs/zarchive.md).

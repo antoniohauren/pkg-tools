@@ -1,5 +1,10 @@
 # Compatibility targets and format research
 
+Milestone 4 update: [native writer and executed reader checks](zarchive.md).
+The historical ZArchive contract below is corrected by the pinned reader's
+extended-name decoding bug: supported components are limited to 127 UTF-8 bytes.
+Zero-payload archives remain rejected; synthetic >4 GiB readback now passes.
+
 Research date: 2026-10-13. This records the original milestone 1 targets and
 source observations. Milestone 3 now verifies extraction of two local GD
 base/full-update fixtures against adapted pinned LibOrbisPkg; no archive or

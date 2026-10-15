@@ -10,12 +10,29 @@ cargo run -p pkg-cli -- inspect INPUT.pkg
 cargo run -p pkg-cli -- inspect INPUT.pkg --json
 cargo run -p pkg-cli -- inspect PARAM.SFO --json
 cargo run --release -p pkg-cli -- extract INPUT.pkg OUTPUT_DIR
+cargo run --release -p pkg-cli -- pack INPUT_DIR OUTPUT.zar
+cargo run --release -p pkg-cli -- convert GAME.pkg Game.zar
+cargo run --release -p pkg-cli -- convert GAME.pkg Game.zar --update UPDATE.pkg
 ```
 
 Inputs are detected by magic, not filename. Rust 1.89 or newer is required;
 current checks used Rust 1.99 on Linux. `psf` is standard-library-only; `ps4-pkg`
 uses pure-Rust crypto/compression and safe Unix filesystem calls through `rustix`.
 The CLI uses `serde_json`. [Dependency decisions](docs/dependencies-and-fixtures.md).
+
+Native Rust ZArchive writing is available through `pack` and `zarchive::Writer`.
+It streams files, spills chunk indexes to disk and publishes finalized output
+without overwriting. Pinned upstream-reader checks include random reads and a
+synthetic >4 GiB file. Names must be UTF-8, at most 127 bytes per component;
+entirely empty-payload trees are unsupported. See [writer contract](docs/zarchive.md).
+
+`convert` streams a supported PS4 base FPKG directly into ZAR. Optional `--update`
+creates sibling `Game-UPDATE.zar`, after checking base/update categories and
+matching title/content IDs. Keep both files together for shadPS4's update overlay.
+No extracted temporary tree is needed; source PKGs remain untouched. Existing
+outputs are rejected. Both payloads are prepared before publication, but two-file
+publication is not atomic: if update finalization fails, the completed base stays
+and the error reports its location. See [conversion checks](docs/zarchive.md#pkg-conversion).
 
 ## GNOME application
 
@@ -53,6 +70,14 @@ different parent. The library's format and extraction limits below also apply
 to the GUI. Use release builds for extraction: debug crypto/decompression is
 substantially slower.
 
+**Convert to ZAR…** in the hamburger menu converts the loaded base game, optionally with a matching
+update selected in the dialog. Choose a new lowercase `.zar` filename; the update
+is saved beside it as `<name>-UPDATE.zar`. Conversion uses the same validation as
+the CLI and streams on a background worker with decoded-byte progress and Cancel.
+Cancellation removes unpublished scratch archives. Preparation and final
+publication are not interruptible; if update publication fails after the base
+is complete, the error identifies the saved base archive.
+
 Blueprint is compiled and embedded during the Cargo build; no external UI files
 are needed at runtime. Plain `cargo build` retains the library/CLI-only build;
 `--workspace` includes the GUI and requires its system dependencies.
@@ -89,6 +114,9 @@ glibc. Cross-distribution compatibility must be checked separately.
 
 ## Libraries
 
+- `zarchive::Writer::create(output)` accepts `add_directory(path)` and
+  `add_file(path, size, reader)` calls, parents first; `finish()` publishes.
+  `zarchive::pack_directory(source, output)` packs a stable directory tree.
 - `psf::parse(&bytes)` reads SFO 1.0/1.1, retaining typed values, unknown formats,
   original bytes and capacity padding. Keys and text remain byte slices;
   callers choose whether to decode UTF-8. Integers preserve all 32 bits.
