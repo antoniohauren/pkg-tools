@@ -9,7 +9,7 @@ use std::{
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]";
+const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg";
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -171,6 +171,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         writeln!(io::stdout().lock(), "{USAGE}")?;
+        return Ok(());
+    }
+    if args.len() == 4 && args[0] == "liberate" {
+        let mut bytes = Vec::new();
+        File::open(&args[2])?.take(17).read_to_end(&mut bytes)?;
+        let rap = ps3_pkg::Rap::from_bytes(&bytes)?;
+        let mut package = ps3_pkg::Package::open(BufReader::new(File::open(&args[1])?))?;
+        package.liberate_with_progress(&rap, &args[3], || false, |_, _| {})?;
+        eprintln!(
+            "RAP-less package saved: {}",
+            std::path::Path::new(&args[3]).display()
+        );
         return Ok(());
     }
     if (args.len() == 3 || (args.len() == 5 && args[3] == "--update")) && args[0] == "convert" {
