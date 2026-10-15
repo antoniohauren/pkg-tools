@@ -30,6 +30,14 @@ Adw.ApplicationWindow window {
   title: "PKG Tools";
   default-width: 960;
   default-height: 600;
+  width-request: 360;
+  height-request: 300;
+  Adw.Breakpoint {
+    condition ("max-width: 700px")
+    setters {
+      package_layout.orientation: vertical;
+    }
+  }
   content: Adw.ToastOverlay toasts {
     child: Adw.ToolbarView {
       [top]
@@ -78,7 +86,7 @@ Adw.ApplicationWindow window {
               child: Adw.Clamp {
                 maximum-size: 1000;
                 tightening-threshold: 800;
-                child: Gtk.Box {
+                child: Gtk.Box package_layout {
                   orientation: horizontal;
                   spacing: 24;
                   margin-start: 24;
