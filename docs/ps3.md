@@ -27,6 +27,12 @@ Flags retain the overwrite bit as metadata; extraction never overwrites.
   no title-ID wrapper or `sce_sys` remapping is added.
 - SELF/EDAT/SDAT contents are preserved. RPCS3's installer additionally decrypts
   SDAT and selects installation destinations; those operations are not performed.
+- RPCS3 HDD-game boot requires a folder name shorter than 32 bytes. The GUI caps
+  generated extraction/liberation folder names accordingly. With CLI extraction,
+  choose a short output name such as `NPUB30892`. For existing long-named output,
+  rename the game root before booting. SSX direct-folder boot was user-verified
+  after this rename with its RAP already installed; this is not a general
+  compatibility guarantee for other titles or payload formats.
 - IDU, PSP/Vita/PSM, split packages and unknown release types are unsupported.
   IDU has no reliable distinct header flag here: an invalid normal-key table
   can mean corruption or an unsupported keyset. The error does not claim to

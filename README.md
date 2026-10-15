@@ -65,7 +65,9 @@ cargo run --release -p pkg-gtk -- /path/to/game.pkg
 
 Use **Open** (Ctrl+O) or drop a single package anywhere in the window to inspect it.
 Drops are ignored while an operation is active. **Extract** asks for a parent folder
-and creates `<package-stem>-extracted` inside it. That directory must not already
+and creates `<package-stem>-extracted` inside it. Generated extraction and liberation
+folder names are capped at 31 UTF-8 bytes (preserving the suffix) to avoid RPCS3's
+HDD-game directory-name assertion. That directory must not already
 exist. Errors include the partial output path when extraction fails. Extraction
 uses a modal dialog with byte-based progress, written/total MB, live output MB/s
 and Cancel. Package preparation shows an indeterminate bar until the decoded

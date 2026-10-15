@@ -370,10 +370,20 @@ fn inspect_ps3(reader: BufReader<File>, path: &Path) -> Result<Details, String> 
     Ok(details)
 }
 
-pub fn destination(source: &Path, parent: &Path) -> PathBuf {
-    let mut name = source.file_stem().unwrap_or_default().to_os_string();
-    name.push("-extracted");
-    parent.join(name)
+pub fn destination(source: &Path, parent: &Path, suffix: &str) -> PathBuf {
+    let name = (if source.is_dir() {
+        source.file_name()
+    } else {
+        source.file_stem()
+    })
+    .unwrap_or_default()
+    .to_string_lossy();
+    // RPCS3 cellGameBootCheck requires HDD-game directory names below 32 bytes.
+    let mut end = name.len().min(31 - suffix.len());
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    parent.join(format!("{}{suffix}", &name[..end]))
 }
 
 pub fn extract(
@@ -468,13 +478,40 @@ mod tests {
     #[test]
     fn destination_stays_inside_selected_parent() {
         assert_eq!(
-            destination(Path::new("/source/game.pkg"), Path::new("/output")),
+            destination(
+                Path::new("/source/game.pkg"),
+                Path::new("/output"),
+                "-extracted"
+            ),
             Path::new("/output/game-extracted")
         );
         assert_eq!(
-            destination(Path::new("/source/..pkg"), Path::new("/output")),
+            destination(
+                Path::new("/source/..pkg"),
+                Path::new("/output"),
+                "-extracted"
+            ),
             Path::new("/output/.-extracted")
         );
+    }
+
+    #[test]
+    fn destination_fits_rpcs3_hdd_game_directory_buffer() {
+        for stem in [
+            "x".repeat(21),
+            "x".repeat(22),
+            "x".repeat(100),
+            "遊".repeat(40),
+        ] {
+            let source = PathBuf::from(format!("{stem}.pkg"));
+            for suffix in ["-extracted", "-liberated"] {
+                let path = destination(&source, Path::new("/output"), suffix);
+                let name = path.file_name().unwrap().to_str().unwrap();
+                assert!(name.len() < 32, "RPCS3 cellGameBootCheck rejects {name}");
+                assert!(name.ends_with(suffix));
+                assert_eq!(path.parent(), Some(Path::new("/output")));
+            }
+        }
     }
 
     #[test]

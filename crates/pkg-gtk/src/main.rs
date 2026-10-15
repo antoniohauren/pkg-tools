@@ -597,16 +597,9 @@ impl Ui {
             let destination = if saving_file {
                 parent
             } else if directory {
-                let name = if source.is_dir() {
-                    source.file_name()
-                } else {
-                    source.file_stem()
-                }
-                .unwrap_or_default()
-                .to_string_lossy();
-                parent.join(format!("{name}-liberated"))
+                package::destination(&source, &parent, "-liberated")
             } else {
-                package::destination(&source, &parent)
+                package::destination(&source, &parent, "-extracted")
             };
             ui.busy(
                 true,
