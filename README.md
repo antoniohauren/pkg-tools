@@ -66,6 +66,27 @@ install -Dm644 crates/pkg-gtk/data/io.github.pkg_tools.PkgTools.desktop \
   ~/.local/share/applications/io.github.pkg_tools.PkgTools.desktop
 ```
 
+## AppImage release
+
+On Linux, with the GUI build dependencies above, `curl`, and the Adwaita icon
+theme installed:
+
+```sh
+bash scripts/build-appimage.sh
+./target/appimage/PKG_Tools-0.1.0-x86_64.AppImage
+```
+
+The script builds the locked release version, bundles GTK/libadwaita and their
+resources using linuxdeploy, and writes an AppImage plus a SHA-256
+checksum to `target/appimage/`. Packaging tools are downloaded on first use and
+cached in `target/appimage-tools/`; remove that directory to refresh them.
+The architecture follows the build machine. Without FUSE, launch with
+`--appimage-extract-and-run`.
+
+Build on the oldest Linux distribution you intend to support: AppImage does not
+bundle glibc, and builds on rolling-release systems can require a newer host
+glibc. Cross-distribution compatibility must be checked separately.
+
 ## Libraries
 
 - `psf::parse(&bytes)` reads SFO 1.0/1.1, retaining typed values, unknown formats,
