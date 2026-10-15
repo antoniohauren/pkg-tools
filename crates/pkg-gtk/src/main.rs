@@ -18,6 +18,7 @@ struct Ui {
     open: gtk::Button,
     welcome_open: gtk::Button,
     extract: gtk::Button,
+    convert: gio::SimpleAction,
     pages: gtk::Stack,
     details: gtk::Box,
     info_dialog: adw::Dialog,
@@ -51,6 +52,8 @@ impl Ui {
         self.welcome_open.set_sensitive(!busy);
         self.extract
             .set_sensitive(!busy && self.path.borrow().is_some());
+        self.convert
+            .set_enabled(!busy && self.path.borrow().is_some());
         self.spinner.set_opacity(if busy { 1.0 } else { 0.0 });
         self.spinner.set_tooltip_text(Some(label));
         self.spinner.set_spinning(busy);
@@ -71,7 +74,7 @@ impl Ui {
     fn cancel_extraction(&self) {
         self.cancellation.store(true, Ordering::Relaxed);
         self.cancel.set_sensitive(false);
-        self.extraction_status.set_label("Cancelling extraction…");
+        self.extraction_status.set_label("Cancelling…");
     }
 
     fn update_progress(&self, written: u64, total: u64, bytes_per_second: f64) {
@@ -199,7 +202,7 @@ impl Ui {
         });
     }
 
-    fn choose_destination(self: &Rc<Self>) {
+    fn choose_destination(self: &Rc<Self>, converting: bool) {
         if self.busy.get() {
             return;
         }
@@ -209,14 +212,89 @@ impl Ui {
         self.busy(true, "Choose a destination…");
         let ui = self.clone();
         glib::spawn_future_local(async move {
+            let mut update = None;
+            if converting {
+                let dialog = adw::AlertDialog::builder()
+                    .heading("Convert to ZAR")
+                    .body("Convert the loaded base game. A matching update can be saved as a separate -UPDATE.zar archive beside it. Existing archives are never replaced.")
+                    .build();
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("base", "Base Only");
+                dialog.add_response("update", "Choose Update…");
+                dialog.set_default_response(Some("base"));
+                dialog.set_close_response("cancel");
+                match dialog
+                    .choose_future(ui.window.upgrade().as_ref())
+                    .await
+                    .as_str()
+                {
+                    "base" => {}
+                    "update" => {
+                        let filter = gtk::FileFilter::new();
+                        filter.set_name(Some("PS4 packages"));
+                        filter.add_pattern("*.pkg");
+                        filter.add_pattern("*.PKG");
+                        let filters = gio::ListStore::new::<gtk::FileFilter>();
+                        filters.append(&filter);
+                        let picker = gtk::FileDialog::builder()
+                            .title("Choose Matching Update")
+                            .filters(&filters)
+                            .build();
+                        match picker.open_future(ui.window.upgrade().as_ref()).await {
+                            Ok(file) => {
+                                update = file.path();
+                                if update.is_none() {
+                                    ui.busy(false, "");
+                                    ui.error(
+                                        "Local File Required",
+                                        "Choose a local update package.",
+                                    );
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                ui.busy(false, "");
+                                if !e.matches(gtk::DialogError::Dismissed) {
+                                    ui.error("Could Not Choose Update", &e.to_string());
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    _ => {
+                        ui.busy(false, "");
+                        return;
+                    }
+                }
+            }
             let dialog = gtk::FileDialog::builder()
-                .title("Choose Extraction Parent Folder")
-                .accept_label("Extract Here")
+                .title(if converting {
+                    "Save ZAR Archive"
+                } else {
+                    "Choose Extraction Parent Folder"
+                })
+                .accept_label(if converting {
+                    "Convert"
+                } else {
+                    "Extract Here"
+                })
                 .build();
-            let folder = match dialog
-                .select_folder_future(ui.window.upgrade().as_ref())
-                .await
-            {
+            let selection = if converting {
+                dialog.set_initial_name(Some(
+                    source
+                        .with_extension("zar")
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .as_ref(),
+                ));
+                dialog.save_future(ui.window.upgrade().as_ref()).await
+            } else {
+                dialog
+                    .select_folder_future(ui.window.upgrade().as_ref())
+                    .await
+            };
+            let folder = match selection {
                 Ok(folder) => folder,
                 Err(e) => {
                     ui.busy(false, "");
@@ -228,14 +306,27 @@ impl Ui {
             };
             let Some(parent) = folder.path() else {
                 ui.busy(false, "");
-                ui.error(
-                    "Local Folder Required",
-                    "Choose a local folder for extraction.",
-                );
+                ui.error("Local Folder Required", "Choose a local destination.");
                 return;
             };
-            let destination = package::destination(&source, &parent);
-            ui.busy(true, "Extracting package…");
+            let destination = if converting {
+                parent
+            } else {
+                package::destination(&source, &parent)
+            };
+            ui.busy(
+                true,
+                if converting {
+                    "Converting package…"
+                } else {
+                    "Extracting package…"
+                },
+            );
+            ui.extraction_dialog.set_title(if converting {
+                "Converting to ZAR"
+            } else {
+                "Extracting Package"
+            });
             ui.show_extraction();
             let cancellation = ui.cancellation.clone();
             let progress = Arc::new(Mutex::new(None));
@@ -268,9 +359,22 @@ impl Ui {
             );
             let output = destination.clone();
             let result = gio::spawn_blocking(move || {
-                package::extract(&source, &output, &cancellation, |written, total| {
+                let progress = |written, total| {
                     *worker_progress.lock().unwrap() = Some((written, total));
-                })
+                };
+                if converting {
+                    pkg_cli::convert::run_with_progress(&source, &output, update.as_deref(),
+                        || cancellation.load(Ordering::Relaxed), progress)
+                        .map_err(|e| e.to_string())
+                } else {
+                    package::extract(&source, &output, &cancellation, progress).map_err(|e| {
+                        if package::was_cancelled(&e) {
+                            format!("{e}\n\nIf a partial output folder was created, remove it before retrying. Existing files were not replaced.")
+                        } else {
+                            e.to_string()
+                        }
+                    })
+                }
             })
             .await;
             timer.remove();
@@ -279,7 +383,11 @@ impl Ui {
             match result {
                 Ok(Ok(())) => {
                     let dialog = adw::AlertDialog::builder()
-                        .heading("Extraction Complete")
+                        .heading(if converting {
+                            "Conversion Complete"
+                        } else {
+                            "Extraction Complete"
+                        })
                         .body(format!("Files saved to {}", destination.display()))
                         .build();
                     dialog.add_response("close", "Close");
@@ -287,19 +395,29 @@ impl Ui {
                     dialog.set_default_response(Some("show"));
                     dialog.set_close_response("close");
                     if dialog.choose_future(ui.window.upgrade().as_ref()).await == "show" {
-                        let launcher =
-                            gtk::FileLauncher::new(Some(&gio::File::for_path(destination)));
+                        let folder = if converting {
+                            destination.parent().unwrap().to_path_buf()
+                        } else {
+                            destination
+                        };
+                        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(folder)));
                         if let Err(e) = launcher.launch_future(ui.window.upgrade().as_ref()).await {
                             ui.error("Could Not Open Folder", &e.to_string());
                         }
                     }
                 }
-                Ok(Err(e)) if package::was_cancelled(&e) => ui.error("Extraction Cancelled", &format!("{e}\n\nIf a partial output folder was created, remove it before retrying. Existing files were not replaced.")),
-                Ok(Err(e)) => ui.error("Extraction Failed", &e.to_string()),
+                Ok(Err(e)) => ui.error(
+                    if converting {
+                        "Conversion Stopped"
+                    } else {
+                        "Extraction Stopped"
+                    },
+                    &e,
+                ),
                 Err(_) => ui.error(
-                    "Extraction Failed",
+                    "Operation Failed",
                     &format!(
-                        "The worker stopped unexpectedly. A partial folder may remain at {}.",
+                        "The worker stopped unexpectedly. Check the output at {} before retrying.",
                         destination.display()
                     ),
                 ),
@@ -317,6 +435,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         open: builder.object("open").unwrap(),
         welcome_open: builder.object("welcome_open").unwrap(),
         extract: builder.object("extract").unwrap(),
+        convert: gio::SimpleAction::new("convert", None),
         pages: builder.object("pages").unwrap(),
         details: builder.object("details").unwrap(),
         info_dialog: builder.object("info_dialog").unwrap(),
@@ -379,8 +498,15 @@ fn build(app: &adw::Application) -> Rc<Ui> {
     ui.extract.connect_clicked(glib::clone!(
         #[weak]
         ui,
-        move |_| ui.choose_destination()
+        move |_| ui.choose_destination(false)
     ));
+    ui.convert.set_enabled(false);
+    ui.convert.connect_activate(glib::clone!(
+        #[weak]
+        ui,
+        move |_, _| ui.choose_destination(true)
+    ));
+    window.add_action(&ui.convert);
     let open = gio::SimpleAction::new("open", None);
     ui.all_info.set_enabled(false);
     ui.all_info.connect_activate(glib::clone!(
@@ -502,6 +628,7 @@ mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let ui = build(&app);
         assert!(!ui.extract.is_sensitive());
+        assert!(!ui.convert.is_enabled());
         assert!(!ui.all_info.is_enabled());
         let path = std::env::var_os("PKG_TOOLS_TEST_PACKAGE")
             .expect("Set PKG_TOOLS_TEST_PACKAGE to a valid PS4 package");
@@ -538,6 +665,7 @@ mod tests {
         }
         assert_eq!(ui.path.borrow().as_ref(), Some(&PathBuf::from(&path)));
         assert!(ui.extract.is_sensitive());
+        assert!(ui.convert.is_enabled());
         assert!(!ui.title.text().is_empty());
         assert_eq!(ui.pages.visible_child(), Some(ui.details.clone().upcast()));
         let icon = ps4_pkg::Package::open(std::fs::File::open(&path).unwrap())
@@ -579,7 +707,7 @@ mod tests {
         assert!(ui.cancellation.load(Ordering::Relaxed));
         assert!(!ui.cancel.is_sensitive());
         ui.update_progress(2_000_000, 4_000_000, 1_000_000.0);
-        assert_eq!(ui.extraction_status.text(), "Cancelling extraction…");
+        assert_eq!(ui.extraction_status.text(), "Cancelling…");
         ui.extraction_dialog.force_close();
         ui.show_extraction();
         assert!(!ui.cancellation.load(Ordering::Relaxed));

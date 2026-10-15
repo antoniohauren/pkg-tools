@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+pkg-cli = { path = "../pkg-cli" }
 adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
 gtk = { package = "gtk4", version = "0.10", features = ["v4_10"] }
 ps4-pkg = { path = "../ps4-pkg" }

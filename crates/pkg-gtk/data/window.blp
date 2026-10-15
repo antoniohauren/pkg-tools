@@ -4,6 +4,12 @@ using Adw 1;
 menu main_menu {
   section {
     item {
+      label: "Convert to ZAR…";
+      action: "win.convert";
+    }
+  }
+  section {
+    item {
       label: "All Info";
       action: "win.all-info";
     }
@@ -182,7 +188,7 @@ Adw.Dialog extraction_dialog {
     margin-top: 28;
     margin-bottom: 28;
     Gtk.Label {
-      label: "Extracting Package";
+      label: bind extraction_dialog.title;
       styles ["title-2"]
     }
     Gtk.Label extraction_status {
