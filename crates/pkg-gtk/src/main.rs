@@ -18,9 +18,11 @@ struct Ui {
     window: glib::WeakRef<adw::ApplicationWindow>,
     open: gio::SimpleAction,
     welcome_open: gtk::Button,
+    welcome: adw::StatusPage,
     extract: gtk::Button,
     convert: gio::SimpleAction,
     send_ps4: gio::SimpleAction,
+    send_batch: gio::SimpleAction,
     link_rap: gio::SimpleAction,
     liberate: gio::SimpleAction,
     rap_source: adw::ActionRow,
@@ -69,6 +71,11 @@ enum Operation {
 
 impl Ui {
     fn show_task(&self, index: i32) {
+        if index == 0 && self.path.borrow().is_none() {
+            self.pages.set_visible_child(&self.welcome);
+            self.details.set_show_content(true);
+            return;
+        }
         let page: &gtk::Widget = match index {
             0 => self.summary_page.upcast_ref(),
             1 => self.send_page.upcast_ref(),
@@ -77,6 +84,7 @@ impl Ui {
             _ => self.info_page.upcast_ref(),
         };
         self.task_pages.set_visible_child(page);
+        self.pages.set_visible_child(&self.task_pages);
         self.details.set_show_content(true);
     }
 
@@ -118,8 +126,14 @@ impl Ui {
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
         self.send_ps4
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
-        self.send_address
-            .set_sensitive(!busy && self.path.borrow().is_some() && self.can_convert.get());
+        self.send_batch.set_enabled(!busy);
+        self.send_address.set_sensitive(!busy);
+        for index in [2, 3, 4] {
+            self.navigation_list
+                .row_at_index(index)
+                .unwrap()
+                .set_sensitive(self.path.borrow().is_some());
+        }
         let ps3 = self.path.borrow().is_some() && !self.can_convert.get();
         self.link_rap.set_enabled(!busy && ps3);
         self.liberate.set_enabled(!busy);
@@ -786,8 +800,8 @@ impl Ui {
         });
     }
 
-    fn choose_ps4(self: &Rc<Self>) {
-        if self.busy.get() || !self.can_convert.get() {
+    fn choose_ps4(self: &Rc<Self>, batch: bool) {
+        if self.busy.get() || (!batch && !self.can_convert.get()) {
             return;
         }
         let ps4 = match self.send_address.text().parse::<std::net::Ipv4Addr>() {
@@ -800,25 +814,64 @@ impl Ui {
                 return;
             }
         };
+        self.busy(true, "Preparing PS4 transfer…");
         let ui = self.clone();
         glib::spawn_future_local(async move {
-            let Some(path) = ui.path.borrow().clone() else {
-                return;
+            let paths = if batch {
+                let filter = gtk::FileFilter::new();
+                filter.set_name(Some("PS4 packages"));
+                filter.add_pattern("*.pkg");
+                filter.add_pattern("*.PKG");
+                let filters = gio::ListStore::new::<gtk::FileFilter>();
+                filters.append(&filter);
+                let dialog = gtk::FileDialog::builder()
+                    .title("Send PS4 Packages")
+                    .filters(&filters)
+                    .build();
+                let result = dialog
+                    .open_multiple_future(ui.window.upgrade().as_ref())
+                    .await;
+                let files = match result {
+                    Ok(files) => files,
+                    Err(e) => {
+                        ui.busy(false, "");
+                        if !e.matches(gtk::DialogError::Dismissed) {
+                            ui.error("Could Not Select Packages", &e.to_string());
+                        }
+                        return;
+                    }
+                };
+                let paths = files
+                    .iter::<gio::File>()
+                    .map(|file| file.ok().and_then(|file| file.path()))
+                    .collect::<Option<Vec<_>>>();
+                match paths {
+                    Some(paths) if !paths.is_empty() => paths,
+                    _ => {
+                        ui.busy(false, "");
+                        ui.error(
+                            "Local Files Required",
+                            "Choose at least one local PS4 package.",
+                        );
+                        return;
+                    }
+                }
+            } else {
+                ui.path.borrow().clone().into_iter().collect()
             };
-            let Some(details) = ui.details_data.borrow().clone() else {
-                return;
-            };
+            let count = paths.len();
             ui.busy(true, "Sending to PS4…");
             ui.extraction_dialog.set_title("Sending to PS4");
             ui.show_extraction();
             ui.extraction_status
-                .set_label("Connecting to GoldHEN BinLoader…");
+                .set_label("Checking selected packages…");
             ui.extraction_transfer.set_label("Waiting for PS4…");
             let cancellation = ui.cancellation.clone();
-            let progress = Arc::new(Mutex::new(None::<(u64, u64)>));
+            let progress = Arc::new(Mutex::new(None::<(usize, u64, u64)>));
             let worker_progress = progress.clone();
             let mut last_sample = Instant::now();
             let mut last_written = 0;
+            let mut last_index = 0;
             let timer = glib::timeout_add_local(
                 Duration::from_millis(250),
                 glib::clone!(
@@ -827,16 +880,29 @@ impl Ui {
                     #[upgrade_or]
                     glib::ControlFlow::Break,
                     move || {
-                        if let Some((written, total)) = *progress.lock().unwrap() {
+                        if let Some((index, written, total)) = *progress.lock().unwrap() {
                             let now = Instant::now();
-                            let rate = written.saturating_sub(last_written) as f64
+                            let rate = written.saturating_sub(if index == last_index {
+                                last_written
+                            } else {
+                                0
+                            }) as f64
                                 / now.duration_since(last_sample).as_secs_f64();
                             ui.update_progress(written, total, rate);
-                            ui.extraction_status.set_label(if written == total {
-                                "Queueing installation…"
-                            } else {
-                                "Sending package…"
-                            });
+                            if !ui.cancellation.load(Ordering::Relaxed) {
+                                ui.extraction_status.set_label(&format!(
+                                    "Package {} of {count} · {}",
+                                    index + 1,
+                                    if written == total {
+                                        "Finishing transfer…"
+                                    } else if written == 0 {
+                                        "Waiting for PS4…"
+                                    } else {
+                                        "Sending package…"
+                                    }
+                                ));
+                            }
+                            last_index = index;
                             last_written = written;
                             last_sample = now;
                         } else {
@@ -847,28 +913,51 @@ impl Ui {
                 ),
             );
             let result = gio::spawn_blocking(move || {
-                ps4_send::send(
-                    &path,
-                    ps4_send::PackageInfo {
-                        name: &details.title,
-                        content_id: &details.content_id,
-                        category: &details.category,
-                        size: details.size,
-                        icon: details.icon.as_deref(),
-                    },
-                    ps4,
-                    cancellation,
-                    |written, total| *worker_progress.lock().unwrap() = Some((written, total)),
-                )
+                let details = paths
+                    .iter()
+                    .map(|path| {
+                        if cancellation.load(Ordering::Relaxed) {
+                            return Err("Sending cancelled".to_owned());
+                        }
+                        let details = package::inspect(path)
+                            .map_err(|e| format!("{}: {e}", path.display()))?;
+                        if !details.can_convert {
+                            return Err(format!(
+                                "{} is not a PS4 package. No packages were sent.",
+                                path.display()
+                            ));
+                        }
+                        Ok(details)
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let packages = paths
+                    .iter()
+                    .zip(&details)
+                    .map(|(path, details)| {
+                        (
+                            path.as_path(),
+                            ps4_send::PackageInfo {
+                                name: &details.title,
+                                content_id: &details.content_id,
+                                category: &details.category,
+                                size: details.size,
+                                icon: details.icon.as_deref(),
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                ps4_send::send_batch(&packages, ps4, cancellation, |index, written, total| {
+                    *worker_progress.lock().unwrap() = Some((index, written, total))
+                })
             })
             .await;
             timer.remove();
             ui.extraction_dialog.force_close();
             ui.busy(false, "");
             match result {
-                Ok(Ok(())) => ui.toasts.add_toast(adw::Toast::new(
-                    "Package transferred; installation queued on PS4.",
-                )),
+                Ok(Ok(())) => ui.toasts.add_toast(adw::Toast::new(&format!(
+                    "{count} package(s) transferred. Check installation status on PS4."
+                ))),
                 Ok(Err(e)) => ui.error("Could Not Send Package", &e),
                 Err(_) => ui.error(
                     "Could Not Send Package",
@@ -887,9 +976,11 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         window: window.downgrade(),
         open: gio::SimpleAction::new("open", None),
         welcome_open: builder.object("welcome_open").unwrap(),
+        welcome: builder.object("welcome").unwrap(),
         extract: builder.object("extract").unwrap(),
         convert: gio::SimpleAction::new("convert", None),
         send_ps4: gio::SimpleAction::new("send-ps4", None),
+        send_batch: gio::SimpleAction::new("send-batch", None),
         link_rap: gio::SimpleAction::new("link-rap", None),
         liberate: gio::SimpleAction::new("liberate", None),
         rap_source: builder.object("rap_source").unwrap(),
@@ -1008,13 +1099,19 @@ fn build(app: &adw::Application) -> Rc<Ui> {
     ui.send_ps4.connect_activate(glib::clone!(
         #[weak]
         ui,
-        move |_, _| ui.choose_ps4()
+        move |_, _| ui.choose_ps4(false)
     ));
     window.add_action(&ui.send_ps4);
+    ui.send_batch.connect_activate(glib::clone!(
+        #[weak]
+        ui,
+        move |_, _| ui.choose_ps4(true)
+    ));
+    window.add_action(&ui.send_batch);
     ui.send_address.connect_activate(glib::clone!(
         #[weak]
         ui,
-        move |_| ui.choose_ps4()
+        move |_| ui.choose_ps4(!ui.can_convert.get())
     ));
     ui.link_rap.set_enabled(false);
     ui.link_rap.connect_activate(glib::clone!(
@@ -1105,6 +1202,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
             let _ = &ui;
         }
     });
+    ui.busy(false, "");
     window.present();
     ui
 }
@@ -1153,7 +1251,25 @@ mod tests {
         assert!(!ui.extract.is_sensitive());
         assert!(!ui.convert.is_enabled());
         assert!(!ui.send_ps4.is_enabled());
+        assert!(ui.send_batch.is_enabled());
+        assert!(ui.send_address.is_sensitive());
+        ui.navigation_list
+            .select_row(ui.navigation_list.row_at_index(1).as_ref());
+        assert_eq!(
+            ui.pages.visible_child(),
+            Some(ui.task_pages.clone().upcast())
+        );
+        assert_eq!(
+            ui.task_pages.visible_child(),
+            Some(ui.send_page.clone().upcast())
+        );
+        ui.busy(true, "Sending…");
+        assert!(!ui.send_batch.is_enabled());
         assert!(!ui.send_address.is_sensitive());
+        ui.busy(false, "");
+        ui.navigation_list
+            .select_row(ui.navigation_list.row_at_index(0).as_ref());
+        assert_eq!(ui.pages.visible_child(), Some(ui.welcome.clone().upcast()));
         assert!(!ui.link_rap.is_enabled());
         assert!(ui.liberate.is_enabled());
         assert_eq!(
@@ -1244,7 +1360,8 @@ mod tests {
         assert!(ui.extract.is_sensitive());
         assert_eq!(ui.convert.is_enabled(), expected.can_convert);
         assert_eq!(ui.send_ps4.is_enabled(), expected.can_convert);
-        assert_eq!(ui.send_address.is_sensitive(), expected.can_convert);
+        assert!(ui.send_batch.is_enabled());
+        assert!(ui.send_address.is_sensitive());
         assert_eq!(ui.link_rap.is_enabled(), !expected.can_convert);
         assert_eq!(ui.rap_source.is_visible(), !expected.can_convert);
         assert!(ui.liberate.is_enabled());

@@ -71,6 +71,12 @@ sends the DirectPackageInstaller payload to GoldHEN BinLoader. Enable GoldHEN's
 BinLoader Server, enter the console's LAN IPv4 address, and keep the computer
 awake until transfer completes. HTTP byte ranges are supported; remote URLs and
 proxy downloads are not.
+**Send to PS4** is available from startup, without opening a package first.
+**Send Multiple Packages…** selects local PS4 packages and sends them sequentially
+in file-picker order using one installer payload. All selected packages are checked
+before sending starts. Progress shows the current package and its transferred bytes.
+Cancel or an error stops the batch; already transferred packages remain on the PS4.
+Transfer completion does not confirm installation success; check the console.
 Drops are ignored while an operation is active. **Extract** asks for a parent folder
 and creates `<package-stem>-extracted` inside it. Generated extraction and liberation
 folder names are capped at 31 UTF-8 bytes (preserving the suffix) to avoid RPCS3's

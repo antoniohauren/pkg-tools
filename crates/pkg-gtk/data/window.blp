@@ -53,8 +53,7 @@ Adw.ApplicationWindow window {
                 content: Gtk.ScrolledWindow {
                   hscrollbar-policy: never;
                   child: Gtk.ListBox navigation_list {
-                  sensitive: false;
-                  selection-mode: single;
+                   selection-mode: single;
                   activate-on-single-click: true;
                   styles ["navigation-sidebar"]
                   Gtk.ListBoxRow summary_nav {
@@ -180,7 +179,7 @@ Adw.ApplicationWindow window {
                 Adw.StatusPage send_page {
                   icon-name: "network-transmit-symbolic";
                   title: "Send to PS4";
-                  description: "Enable GoldHEN’s BinLoader Server, then send this package over your local network. Keep this computer awake until transfer completes.";
+                  description: "Enable GoldHEN’s BinLoader Server, then send local PS4 packages over your network. Keep this computer awake until transfer completes.";
                   child: Gtk.Box {
                     orientation: vertical;
                     spacing: 12;
@@ -198,6 +197,11 @@ Adw.ApplicationWindow window {
                       label: "Send Package";
                       action-name: "win.send-ps4";
                       styles ["pill", "suggested-action"]
+                    }
+                    Gtk.Button {
+                      label: "Send Multiple Packages…";
+                      action-name: "win.send-batch";
+                      styles ["pill"]
                     }
                   };
                 }

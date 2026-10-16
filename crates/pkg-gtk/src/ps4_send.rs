@@ -28,13 +28,64 @@ enum HttpEvent {
     Error(String),
 }
 
-pub fn send(
-    path: &Path,
-    info: PackageInfo<'_>,
+pub fn send_batch(
+    packages: &[(&Path, PackageInfo<'_>)],
     ps4: Ipv4Addr,
     cancelled: Arc<AtomicBool>,
-    mut progress: impl FnMut(u64, u64),
+    mut progress: impl FnMut(usize, u64, u64),
 ) -> Result<(), String> {
+    if packages.is_empty() {
+        return Err("Choose at least one PS4 package".into());
+    }
+    // Validate the whole selection before starting any remote installation.
+    let digests = packages
+        .iter()
+        .map(|(path, info)| {
+            validate_info(info)
+                .and_then(|()| package_digest(path))
+                .map_err(|e| format!("{}: {e}. No packages were sent.", path.display()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Sending cancelled".into());
+    }
+    let local =
+        local_address(ps4).map_err(|e| format!("Could not determine local address: {e}"))?;
+    let session = Session {
+        local,
+        callback: TcpListener::bind(SocketAddrV4::new(local, 0)).map_err(|e| e.to_string())?,
+        http: TcpListener::bind(SocketAddrV4::new(local, 0)).map_err(|e| e.to_string())?,
+    };
+    session
+        .callback
+        .set_nonblocking(true)
+        .map_err(|e| e.to_string())?;
+    session
+        .http
+        .set_nonblocking(true)
+        .map_err(|e| e.to_string())?;
+    let callback_port = session
+        .callback
+        .local_addr()
+        .map_err(|e| e.to_string())?
+        .port();
+    send_payload(ps4, patched_payload(local, callback_port)?)?;
+    let result = packages.iter().zip(digests).enumerate().try_for_each(
+        |(index, ((path, info), digest))| {
+            progress(index, 0, info.size);
+            session.transfer(path, info, &digest, &cancelled, &mut |written, total| {
+                progress(index, written, total);
+            }).map_err(|e| format!("Package {} of {} ({}): {e}\n{index} package(s) already transferred; remaining packages were not sent.", index + 1, packages.len(), path.display()))
+        },
+    );
+    if result.is_err() {
+        cancelled.store(true, Ordering::Relaxed);
+    }
+    session.finish();
+    result
+}
+
+fn validate_info(info: &PackageInfo<'_>) -> Result<(), String> {
     for (label, value, limit) in [
         ("package name", info.name.as_bytes(), 0x259),
         ("content ID", info.content_id.as_bytes(), 0x30),
@@ -47,112 +98,129 @@ pub fn send(
     if info.icon.is_some_and(|icon| icon.len() > u32::MAX as usize) {
         return Err("Package icon is too large for installer payload".into());
     }
-    let local =
-        local_address(ps4).map_err(|e| format!("Could not determine local address: {e}"))?;
-    let callback = TcpListener::bind(SocketAddrV4::new(local, 0)).map_err(|e| e.to_string())?;
-    let http = TcpListener::bind(SocketAddrV4::new(local, 0)).map_err(|e| e.to_string())?;
-    callback.set_nonblocking(true).map_err(|e| e.to_string())?;
-    http.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let callback_port = callback.local_addr().map_err(|e| e.to_string())?.port();
-    let http_port = http.local_addr().map_err(|e| e.to_string())?.port();
-    send_payload(ps4, patched_payload(local, callback_port)?)?;
+    Ok(())
+}
 
-    let token = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pkg_path = format!("/{token}/package.pkg");
-    let manifest_path = format!("/{token}/package.json");
-    let pkg_url = format!("http://{local}:{http_port}{pkg_path}");
-    let manifest_url = format!("http://{local}:{http_port}{manifest_path}");
-    let manifest = Arc::new(format!(
+struct Session {
+    local: Ipv4Addr,
+    callback: TcpListener,
+    http: TcpListener,
+}
+
+impl Session {
+    fn transfer(
+        &self,
+        path: &Path,
+        info: &PackageInfo<'_>,
+        digest: &str,
+        cancelled: &Arc<AtomicBool>,
+        progress: &mut impl FnMut(u64, u64),
+    ) -> Result<(), String> {
+        let local = self.local;
+        let http_port = self.http.local_addr().map_err(|e| e.to_string())?.port();
+
+        let token = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pkg_path = format!("/{token}/package.pkg");
+        let manifest_path = format!("/{token}/package.json");
+        let pkg_url = format!("http://{local}:{http_port}{pkg_path}");
+        let manifest_url = format!("http://{local}:{http_port}{manifest_path}");
+        let manifest = Arc::new(format!(
         "{{\"originalFileSize\":{},\"packageDigest\":\"{}\",\"numberOfSplitFiles\":1,\"pieces\":[{{\"url\":\"{}\",\"fileOffset\":0,\"fileSize\":{},\"hashValue\":\"0000000000000000000000000000000000000000\"}}]}}",
         info.size,
-        package_digest(path)?,
+        digest,
         pkg_url,
         info.size,
     ).into_bytes());
 
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let (events, http_events) = mpsc::channel();
-    let mut metadata_sent = false;
-    let mut finished = false;
-    let mut covered = Vec::new();
-    while !finished {
-        if cancelled.load(Ordering::Relaxed) {
-            return Err("Sending cancelled".into());
-        }
-        if !metadata_sent && Instant::now() >= deadline {
-            return Err("Installer payload did not connect back. Check GoldHEN BinLoader and firewall settings.".into());
-        }
-        if !metadata_sent {
-            match callback.accept() {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let (events, http_events) = mpsc::channel();
+        let mut metadata_sent = false;
+        let mut finished = false;
+        let mut covered = Vec::new();
+        while !finished {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err("Sending cancelled".into());
+            }
+            if !metadata_sent && Instant::now() >= deadline {
+                return Err("Installer payload did not connect back. Check GoldHEN BinLoader and firewall settings.".into());
+            }
+            if !metadata_sent {
+                match self.callback.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+                        write_metadata(&mut stream, &manifest_url, info)
+                            .map_err(|e| e.to_string())?;
+                        metadata_sent = true;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            match self.http.accept() {
                 Ok((mut stream, _)) => {
-                    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-                    write_metadata(&mut stream, &manifest_url, &info).map_err(|e| e.to_string())?;
-                    metadata_sent = true;
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(10 * 60)))
+                        .ok();
+                    // BGFT can pause while validating package metadata before resuming reads.
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(10 * 60)))
+                        .ok();
+                    let path = path.to_owned();
+                    let pkg_path = pkg_path.clone();
+                    let manifest_path = manifest_path.clone();
+                    let manifest = manifest.clone();
+                    let cancelled = cancelled.clone();
+                    let events = events.clone();
+                    std::thread::spawn(move || {
+                        let result = serve_request(
+                            &mut stream,
+                            &path,
+                            &pkg_path,
+                            &manifest_path,
+                            &manifest,
+                            &cancelled,
+                            &mut |start, end, total| {
+                                let _ = events.send(HttpEvent::Progress(start, end, total));
+                            },
+                        );
+                        match result {
+                            Ok(Some((start, end))) => {
+                                let _ = events.send(HttpEvent::Completed(start, end));
+                            }
+                            Ok(None) => {}
+                            Err(e) if http_client_disconnected(&e) => {}
+                            Err(e) => {
+                                let _ = events.send(HttpEvent::Error(e.to_string()));
+                            }
+                        }
+                    });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e.to_string()),
             }
-        }
-        match http.accept() {
-            Ok((mut stream, _)) => {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(10 * 60)))
-                    .ok();
-                // BGFT can pause while validating package metadata before resuming reads.
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(10 * 60)))
-                    .ok();
-                let path = path.to_owned();
-                let pkg_path = pkg_path.clone();
-                let manifest_path = manifest_path.clone();
-                let manifest = manifest.clone();
-                let cancelled = cancelled.clone();
-                let events = events.clone();
-                std::thread::spawn(move || {
-                    let result = serve_request(
-                        &mut stream,
-                        &path,
-                        &pkg_path,
-                        &manifest_path,
-                        &manifest,
-                        &cancelled,
-                        &mut |start, end, total| {
-                            let _ = events.send(HttpEvent::Progress(start, end, total));
-                        },
-                    );
-                    match result {
-                        Ok(Some((start, end))) => {
-                            let _ = events.send(HttpEvent::Completed(start, end));
-                        }
-                        Ok(None) => {}
-                        Err(e) if http_client_disconnected(&e) => {}
-                        Err(e) => {
-                            let _ = events.send(HttpEvent::Error(e.to_string()));
-                        }
-                    }
-                });
+            for event in http_events.try_iter() {
+                finished |= handle_http_event(event, &mut covered, info.size, progress)?;
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.to_string()),
+            std::thread::sleep(Duration::from_millis(10));
         }
-        for event in http_events.try_iter() {
-            finished = handle_http_event(event, &mut covered, info.size, &mut progress)?;
-        }
-        std::thread::sleep(Duration::from_millis(10));
+        Ok(())
     }
-    // Let BGFT finish consuming the response before asking payload to exit.
-    let until = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < until {
-        if let Ok((mut stream, _)) = callback.accept() {
-            let _ = stream.write_all(&0u32.to_le_bytes());
-            break;
+
+    fn finish(&self) {
+        // The payload reconnects for each package; zero ends the batch.
+        let until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < until {
+            if let Ok((mut stream, _)) = self.callback.accept() {
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.write_all(&0u32.to_le_bytes());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        std::thread::sleep(Duration::from_millis(20));
     }
-    Ok(())
 }
 
 fn handle_http_event(
@@ -437,6 +505,130 @@ fn write_status(stream: &mut TcpStream, status: &str, length: u64) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_empty_batch_before_connecting() {
+        assert!(
+            send_batch(
+                &[],
+                Ipv4Addr::LOCALHOST,
+                Arc::new(AtomicBool::new(false)),
+                |_, _, _| {}
+            )
+            .unwrap_err()
+            .contains("at least one")
+        );
+    }
+
+    #[test]
+    fn session_sends_two_packages_then_exits_payload() {
+        let session = Session {
+            local: Ipv4Addr::LOCALHOST,
+            callback: TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+            http: TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+        };
+        session.callback.set_nonblocking(true).unwrap();
+        session.http.set_nonblocking(true).unwrap();
+        let callback_address = session.callback.local_addr().unwrap();
+        let http_address = session.http.local_addr().unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let client_cancelled = cancelled.clone();
+        let client = std::thread::spawn(move || {
+            let result = (|| -> io::Result<()> {
+                let mut previous_url = String::new();
+                for expected_name in ["Base", "Update"] {
+                    let mut stream = TcpStream::connect(callback_address)?;
+                    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    let mut word = [0; 4];
+                    stream.read_exact(&mut word)?;
+                    assert_eq!(u32::from_le_bytes(word), 1);
+                    let mut fields = Vec::new();
+                    for _ in 0..4 {
+                        stream.read_exact(&mut word)?;
+                        let mut value = vec![0; u32::from_le_bytes(word) as usize];
+                        stream.read_exact(&mut value)?;
+                        fields.push(String::from_utf8(value).unwrap());
+                    }
+                    assert_eq!(fields[1], expected_name);
+                    assert_ne!(fields[0], previous_url);
+                    previous_url = fields[0].clone();
+                    let mut size = [0; 8];
+                    stream.read_exact(&mut size)?;
+                    assert_eq!(u64::from_le_bytes(size), 7);
+                    stream.read_exact(&mut word)?;
+                    assert_eq!(word, [0; 4]);
+                    let path = fields[0]
+                        .strip_prefix(&format!("http://{http_address}"))
+                        .unwrap()
+                        .replace("package.json", "package.pkg");
+                    let mut http = TcpStream::connect(http_address)?;
+                    http.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    write!(http, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
+                    let mut response = Vec::new();
+                    http.read_to_end(&mut response)?;
+                    assert!(response.ends_with(b"payload"));
+                }
+                let mut stream = TcpStream::connect(callback_address)?;
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let mut word = [1; 4];
+                stream.read_exact(&mut word)?;
+                assert_eq!(word, [0; 4]);
+                Ok(())
+            })();
+            if result.is_err() {
+                client_cancelled.store(true, Ordering::Relaxed);
+            }
+            result
+        });
+        let path = std::env::temp_dir().join(format!(
+            "pkg-tools-batch-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"payload").unwrap();
+        for (name, category) in [("Base", "gd"), ("Update", "gp")] {
+            let mut sample = (0, 0);
+            session
+                .transfer(
+                    &path,
+                    &PackageInfo {
+                        name,
+                        category,
+                        content_id: "TEST",
+                        size: 7,
+                        icon: None,
+                    },
+                    "digest",
+                    &cancelled,
+                    &mut |written, total| sample = (written, total),
+                )
+                .unwrap();
+            assert_eq!(sample, (7, 7));
+        }
+        cancelled.store(true, Ordering::Relaxed);
+        assert_eq!(
+            session.transfer(
+                &path,
+                &PackageInfo {
+                    name: "Not sent",
+                    category: "gd",
+                    content_id: "TEST",
+                    size: 7,
+                    icon: None,
+                },
+                "digest",
+                &cancelled,
+                &mut |_, _| panic!("cancelled package made progress"),
+            ),
+            Err("Sending cancelled".into())
+        );
+        session.finish();
+        client.join().unwrap().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn parses_http_ranges() {
