@@ -47,8 +47,8 @@ and the error reports its location. See [conversion checks](docs/zarchive.md#pkg
 
 `pkg-gtk` provides a native Rust GTK4/libadwaita interface for PS3 and PS4, authored in
 Blueprint. Overview shows game artwork, title, title ID, application version,
-game/patch type, package size, content ID and source. **All Info** in the
-hamburger menu opens a modal dialog containing headers,
+game/patch type, package size, content ID and source. A collapsible task sidebar groups
+the summary, transfer, extraction, conversion and **All Info** views. All Info contains headers,
 SFO metadata and container records. Binary metadata previews stop at 64 bytes;
 use CLI JSON for complete raw values. Artwork must be a PNG no larger than
 4 MiB with dimensions up to 2048 × 2048. Unreadable artwork falls back to a
@@ -63,8 +63,10 @@ cargo run --release -p pkg-gtk
 cargo run --release -p pkg-gtk -- /path/to/game.pkg
 ```
 
-Use **Open** (Ctrl+O) or drop a single package anywhere in the window to inspect it.
-For a loaded PS4 package, **Send to PS4…** serves the local file over HTTP and
+Use **Open Package…** in the main menu (Ctrl+O) or drop a single package anywhere
+in the window to inspect it. The full-height sidebar has its own header;
+the sidebar button in the content header hides or restores it.
+For a loaded PS4 package, **Send to PS4** serves the local file over HTTP and
 sends the DirectPackageInstaller payload to GoldHEN BinLoader. Enable GoldHEN's
 BinLoader Server, enter the console's LAN IPv4 address, and keep the computer
 awake until transfer completes. HTTP byte ranges are supported; remote URLs and
@@ -86,7 +88,7 @@ different parent. The library's format and extraction limits below also apply
 to the GUI. Use release builds for extraction: debug crypto/decompression is
 substantially slower.
 
-**Convert to ZAR…** in the hamburger menu converts the loaded base game, optionally with a matching
+**Convert to ZAR…** in the Convert view converts the loaded base game, optionally with a matching
 update selected in the dialog. Choose a new lowercase `.zar` filename; the update
 is saved beside it as `<name>-UPDATE.zar`. Conversion uses the same validation as
 the CLI and streams on a background worker with decoded-byte progress and Cancel.
@@ -95,7 +97,7 @@ publication are not interruptible; if update publication fails after the base
 is complete, the error identifies the saved base archive.
 Conversion is PS4-only; the action is disabled for PS3 packages.
 
-For PS3, choose **Liberate…** from the hamburger menu, then choose a PKG, the loaded
+For PS3, choose **Liberate…** from the Convert view, then choose a PKG, the loaded
 package, or an extracted game folder (containing `PARAM.SFO` and `USRDIR`).
 The dialog finds `<content-id>.rap` beside the source or in nearby `exdata` folders
 (also inside extracted folders), ignoring filename case. You can **Link RAP…**
