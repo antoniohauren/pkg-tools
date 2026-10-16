@@ -1,5 +1,4 @@
 mod package;
-mod ps4_send;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -317,7 +316,7 @@ impl Ui {
                     if let Some(path) = file.path() {
                         let input = path.clone();
                         match gio::spawn_blocking(move || {
-                            package::read_rap(&input)
+                            pkg_ops::liberate::read_rap(&input)
                                 .map(|_| ())
                                 .map_err(|e| e.to_string())
                         })
@@ -412,8 +411,8 @@ impl Ui {
             };
             let input = source.clone();
             let result = gio::spawn_blocking(move || {
-                let id = package::liberation_content_id(&input)?;
-                let rap = package::find_rap(&input, &id);
+                let id = pkg_ops::liberate::liberation_content_id(&input)?;
+                let rap = pkg_ops::liberate::find_rap(&input, &id);
                 Ok::<_, String>((id, rap))
             })
             .await;
@@ -726,18 +725,18 @@ impl Ui {
                     *worker_progress.lock().unwrap() = Some((written, total));
                 };
                 if converting {
-                    pkg_cli::convert::run_with_progress(&source, &output, update.as_deref(),
+                    pkg_ops::convert::run_with_progress(&source, &output, update.as_deref(),
                         || cancellation.load(Ordering::Relaxed), progress)
                         .map_err(|e| e.to_string())
                 } else if liberating {
-                    package::liberate(&source, rap.as_ref().unwrap(), &output, directory, &cancellation, progress).map_err(|e| {
+                    pkg_ops::liberate::liberate(&source, rap.as_ref().unwrap(), &output, directory, &cancellation, progress).map_err(|e| {
                         if matches!(e.downcast_ref::<ps3_pkg::Error>(), Some(ps3_pkg::Error::IncompleteExtraction { .. })) {
                             format!("{e}\n\nRemove the incomplete output folder before retrying. Existing files were not replaced.")
                         } else { e.to_string() }
                     })
                 } else {
-                    package::extract(&source, &output, &cancellation, progress).map_err(|e| {
-                        if package::was_cancelled(e.as_ref()) {
+                    pkg_ops::extract(&source, &output, &cancellation, progress).map_err(|e| {
+                        if pkg_ops::was_cancelled(e.as_ref()) {
                             format!("{e}\n\nIf a partial output folder was created, remove it before retrying. Existing files were not replaced.")
                         } else {
                             e.to_string()

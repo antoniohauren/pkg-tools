@@ -156,23 +156,25 @@ fn conversion_rejects_unsupported_inputs_and_bad_options_without_output() {
 }
 
 #[test]
-fn extraction_rejects_truncated_ps3_before_creating_output() {
-    let input = Input::new(b"\x7fPKG");
-    let output = input.0.parent().unwrap().join("output");
-    let result = Command::new(env!("CARGO_BIN_EXE_pkg-tools"))
-        .arg("extract")
-        .arg(&input.0)
-        .arg(&output)
-        .output()
-        .unwrap();
-    assert!(!result.status.success());
-    assert!(!output.exists());
-    assert!(result.stdout.is_empty());
-    assert!(
-        String::from_utf8(result.stderr)
-            .unwrap()
-            .contains("truncated")
-    );
+fn extraction_rejects_truncated_packages_before_creating_output() {
+    for magic in [b"\x7fPKG", b"\x7fCNT"] {
+        let input = Input::new(magic);
+        let output = input.0.parent().unwrap().join("output");
+        let result = Command::new(env!("CARGO_BIN_EXE_pkg-tools"))
+            .arg("extract")
+            .arg(&input.0)
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(!output.exists());
+        assert!(result.stdout.is_empty());
+        assert!(
+            String::from_utf8(result.stderr)
+                .unwrap()
+                .contains("truncated")
+        );
+    }
 }
 
 #[test]

@@ -1,3 +1,7 @@
+//! Local PS4 package transfer through the bundled DirectPackageInstaller payload.
+//! Callers must inspect every input as a PS4 package and supply matching metadata.
+//! Completion confirms transferred bytes, not installation success on the console.
+
 use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},

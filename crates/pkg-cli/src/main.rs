@@ -7,6 +7,7 @@ use std::{
     fs::File,
     io::{self, BufReader, Read, Seek, SeekFrom, Write},
     process::ExitCode,
+    sync::atomic::AtomicBool,
 };
 
 const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg";
@@ -174,11 +175,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if args.len() == 4 && args[0] == "liberate" {
-        let mut bytes = Vec::new();
-        File::open(&args[2])?.take(17).read_to_end(&mut bytes)?;
-        let rap = ps3_pkg::Rap::from_bytes(&bytes)?;
-        let mut package = ps3_pkg::Package::open(BufReader::new(File::open(&args[1])?))?;
-        package.liberate_with_progress(&rap, &args[3], || false, |_, _| {})?;
+        pkg_ops::liberate::liberate(
+            std::path::Path::new(&args[1]),
+            std::path::Path::new(&args[2]),
+            std::path::Path::new(&args[3]),
+            false,
+            &AtomicBool::new(false),
+            |_, _| {},
+        )?;
         eprintln!(
             "RAP-less package saved: {}",
             std::path::Path::new(&args[3]).display()
@@ -201,19 +205,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if args.len() == 3 && args[0] == "extract" {
-        let mut reader = BufReader::new(File::open(&args[1])?);
-        let mut magic = [0; 4];
-        reader.read_exact(&mut magic)?;
-        reader.rewind()?;
-        if magic == *b"\x7fPKG" {
-            let mut pkg = ps3_pkg::Package::open(reader)?;
-            eprintln!("Extracting {} application entries...", pkg.entries().len());
-            pkg.extract(&args[2])?;
-        } else {
-            let mut game = ps4_pkg::Package::open(reader)?.open_game()?;
-            eprintln!("Extracting {} application entries...", game.entries().len());
-            game.extract(&args[2])?;
-        }
+        eprintln!("Extracting application entries...");
+        pkg_ops::extract(
+            std::path::Path::new(&args[1]),
+            std::path::Path::new(&args[2]),
+            &AtomicBool::new(false),
+            |_, _| {},
+        )?;
         eprintln!(
             "Extraction complete: {}",
             std::path::Path::new(&args[2]).display()

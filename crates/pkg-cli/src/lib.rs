@@ -1,2 +1,2 @@
-//! Shared package conversion workflow for command-line and graphical frontends.
+//! Command-line reporting for the shared `pkg-ops` conversion workflow.
 pub mod convert;

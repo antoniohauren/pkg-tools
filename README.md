@@ -153,6 +153,15 @@ glibc. Cross-distribution compatibility must be checked separately.
 
 ## Libraries
 
+- `ps4_send::send_batch` transfers inspected local PS4 packages through GoldHEN
+  BinLoader with sequential batches, HTTP byte ranges, cancellation and progress.
+  Callers supply matching package metadata; completion does not confirm installation.
+  Its bundled payload and license live in `crates/ps4-send/data/dpi-payload`.
+- `pkg_ops` owns shared PS3/PS4 extraction dispatch, PS3 liberation input handling
+  and PS4-to-ZAR conversion. CLI and GTK depend on it directly; presentation and
+  command-line reporting remain in their respective frontends.
+  Use `pkg_ops::extract`, `pkg_ops::liberate::liberate` and
+  `pkg_ops::convert::run_with_progress` for cancellable operations with byte progress.
 - `ps3_pkg::Package::open(reader)` exposes `header()`, raw `metadata()`, sorted
   `entries()`, `read_param_sfo()`, `read_icon0()`, and streaming `read_entry(index)`.
   `extract`, `extract_with_cancel` and `extract_with_progress` write a new tree.

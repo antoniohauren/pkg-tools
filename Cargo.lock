@@ -815,6 +815,7 @@ dependencies = [
 name = "pkg-cli"
 version = "0.1.0"
 dependencies = [
+ "pkg-ops",
  "ps3-pkg",
  "ps4-pkg",
  "psf",
@@ -841,10 +842,21 @@ version = "0.1.0"
 dependencies = [
  "gtk4",
  "libadwaita",
- "pkg-cli",
+ "pkg-ops",
+ "ps3-pkg",
+ "ps4-pkg",
+ "ps4-send",
+ "psf",
+]
+
+[[package]]
+name = "pkg-ops"
+version = "0.1.0"
+dependencies = [
  "ps3-pkg",
  "ps4-pkg",
  "psf",
+ "zarchive",
 ]
 
 [[package]]
@@ -898,6 +910,10 @@ dependencies = [
  "sha2",
  "xts-mode",
 ]
+
+[[package]]
+name = "ps4-send"
+version = "0.1.0"
 
 [[package]]
 name = "psf"
