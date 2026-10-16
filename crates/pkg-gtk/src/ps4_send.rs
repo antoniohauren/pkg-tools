@@ -23,7 +23,7 @@ pub struct PackageInfo<'a> {
 }
 
 enum HttpEvent {
-    Progress(u64, u64),
+    Progress(u64, u64, u64),
     Completed(u64, u64),
     Error(String),
 }
@@ -78,7 +78,6 @@ pub fn send(
     let mut metadata_sent = false;
     let mut finished = false;
     let mut covered = Vec::new();
-    let mut reported = 0;
     while !finished {
         if cancelled.load(Ordering::Relaxed) {
             return Err("Sending cancelled".into());
@@ -120,8 +119,8 @@ pub fn send(
                         &manifest_path,
                         &manifest,
                         &cancelled,
-                        &mut |written, total| {
-                            let _ = events.send(HttpEvent::Progress(written, total));
+                        &mut |start, end, total| {
+                            let _ = events.send(HttpEvent::Progress(start, end, total));
                         },
                     );
                     match result {
@@ -140,19 +139,7 @@ pub fn send(
             Err(e) => return Err(e.to_string()),
         }
         for event in http_events.try_iter() {
-            match event {
-                HttpEvent::Progress(written, total) => {
-                    reported = reported.max(written);
-                    progress(reported, total);
-                }
-                HttpEvent::Completed(start, end) => {
-                    add_range(&mut covered, start, end);
-                    finished = covered
-                        .first()
-                        .is_some_and(|range| *range == (0, info.size));
-                }
-                HttpEvent::Error(error) => return Err(format!("HTTP transfer failed: {error}")),
-            }
+            finished = handle_http_event(event, &mut covered, info.size, &mut progress)?;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -166,6 +153,24 @@ pub fn send(
         std::thread::sleep(Duration::from_millis(20));
     }
     Ok(())
+}
+
+fn handle_http_event(
+    event: HttpEvent,
+    covered: &mut Vec<(u64, u64)>,
+    size: u64,
+    progress: &mut impl FnMut(u64, u64),
+) -> Result<bool, String> {
+    match event {
+        HttpEvent::Progress(start, end, total) => {
+            // Keep bytes from interrupted requests: BGFT can resume without requesting them again.
+            add_range(covered, start, end);
+            progress(covered.iter().map(|(start, end)| end - start).sum(), total);
+        }
+        HttpEvent::Completed(start, end) => add_range(covered, start, end),
+        HttpEvent::Error(error) => return Err(format!("HTTP transfer failed: {error}")),
+    }
+    Ok(covered.first().is_some_and(|range| *range == (0, size)))
 }
 
 fn http_client_disconnected(error: &io::Error) -> bool {
@@ -262,7 +267,7 @@ fn serve_request(
     manifest_path: &str,
     manifest: &[u8],
     cancelled: &AtomicBool,
-    progress: &mut impl FnMut(u64, u64),
+    progress: &mut impl FnMut(u64, u64, u64),
 ) -> io::Result<Option<(u64, u64)>> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request = String::new();
@@ -359,7 +364,7 @@ fn serve_request(
         stream.write_all(&buffer[..read])?;
         remaining -= read as u64;
         sent += read as u64;
-        progress(start + sent, total);
+        progress(start + sent - read as u64, start + sent, total);
     }
     Ok(Some((start, start + length)))
 }
@@ -449,6 +454,45 @@ mod tests {
         add_range(&mut ranges, 0, 25);
         add_range(&mut ranges, 20, 60);
         assert_eq!(ranges, [(0, 100)]);
+    }
+
+    #[test]
+    fn resumed_transfer_finishes_after_downloader_disconnect() {
+        let mut covered = vec![];
+        let mut sample = (0, 0);
+        // The first request delivered bytes before disconnecting, so it has no Completed event.
+        let mut finished = false;
+        for event in [
+            HttpEvent::Progress(0, 50, 100),
+            HttpEvent::Progress(50, 100, 100),
+            HttpEvent::Completed(50, 100),
+        ] {
+            finished = handle_http_event(event, &mut covered, 100, &mut |n, t| {
+                sample = (n, t);
+            })
+            .unwrap();
+        }
+        assert_eq!(sample, (100, 100));
+        assert!(finished, "transfer reached 100% but never completed");
+    }
+
+    #[test]
+    fn progress_counts_unique_bytes_not_range_end() {
+        let mut covered = vec![];
+        let mut sample = (0, 0);
+        for event in [
+            HttpEvent::Progress(50, 100, 100),
+            HttpEvent::Progress(75, 100, 100),
+            HttpEvent::Completed(50, 100),
+        ] {
+            assert!(
+                !handle_http_event(event, &mut covered, 100, &mut |n, t| {
+                    sample = (n, t);
+                })
+                .unwrap()
+            );
+        }
+        assert_eq!(sample, (50, 100));
     }
 
     #[test]
