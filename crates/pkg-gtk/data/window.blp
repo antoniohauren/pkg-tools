@@ -4,26 +4,8 @@ using Adw 1;
 menu main_menu {
   section {
     item {
-      label: "Send to PS4…";
-      action: "win.send-ps4";
-    }
-    item {
-      label: "Convert to ZAR…";
-      action: "win.convert";
-    }
-    item {
-      label: "Link RAP…";
-      action: "win.link-rap";
-    }
-    item {
-      label: "Liberate…";
-      action: "win.liberate";
-    }
-  }
-  section {
-    item {
-      label: "All Info";
-      action: "win.all-info";
+      label: "Open Package…";
+      action: "win.open";
     }
   }
   section {
@@ -41,158 +23,245 @@ menu main_menu {
 Adw.ApplicationWindow window {
   title: "PKG Tools";
   default-width: 960;
-  default-height: 600;
+  default-height: 850;
   width-request: 360;
   height-request: 300;
   Adw.Breakpoint {
-    condition ("max-width: 700px")
+    condition ("max-width: 600px")
     setters {
-      package_layout.orientation: vertical;
+      details.collapsed: true;
+      convert_actions.orientation: vertical;
     }
   }
   content: Adw.ToastOverlay toasts {
-    child: Adw.ToolbarView {
-      [top]
-      Adw.HeaderBar {
-        title-widget: Adw.WindowTitle { title: "PKG Tools"; };
-        [start]
-        Gtk.Button open {
-          label: "Open…";
-          tooltip-text: "Open a package (Ctrl+O)";
-        }
-        [start]
-        Gtk.Spinner spinner { opacity: 0; }
-        [end]
-        Gtk.MenuButton {
-          icon-name: "open-menu-symbolic";
-          tooltip-text: "Main Menu";
-          menu-model: main_menu;
-        }
-        [end]
-        Gtk.Button extract {
-          label: "Extract…";
-          sensitive: false;
-          styles ["suggested-action"]
-        }
-      }
-      content: Gtk.Box {
-        orientation: vertical;
-        Gtk.Stack pages {
-          vexpand: true;
-          transition-type: crossfade;
-          Adw.StatusPage welcome {
-            icon-name: "package-x-generic-symbolic";
-            title: "Look Inside Your Packages";
-            description: "Drop a package here or open one to inspect its metadata and extract supported fake packages.";
-            child: Gtk.Button welcome_open {
-              label: "Open Package…";
-              halign: center;
-              styles ["pill", "suggested-action"]
-            };
-          }
-          Gtk.Box details {
-            orientation: vertical;
-            Gtk.ScrolledWindow {
-              vexpand: true;
-              hscrollbar-policy: never;
-              child: Adw.Clamp {
-                maximum-size: 1000;
-                tightening-threshold: 800;
-                child: Gtk.Box package_layout {
-                  orientation: horizontal;
-                  spacing: 24;
-                  margin-start: 24;
-                  margin-end: 24;
-                  margin-top: 16;
-                  margin-bottom: 16;
-                  Gtk.Box {
-                    orientation: vertical;
-                    spacing: 16;
-                    valign: start;
-                    Gtk.Image artwork {
-                      icon-name: "package-x-generic-symbolic";
-                      pixel-size: 280;
-                      halign: center;
-                      tooltip-text: "Game artwork";
-                    }
-                    Gtk.Label package_title {
-                      wrap: true;
-                      max-width-chars: 24;
-                      selectable: true;
-                      xalign: 0.5;
-                      justify: center;
-                      styles ["title-1"]
-                    }
+    child: Adw.NavigationSplitView details {
+            min-sidebar-width: 240;
+            max-sidebar-width: 300;
+            sidebar: Adw.NavigationPage {
+              title: "PKG Tools";
+              child: Adw.ToolbarView {
+                [top]
+                Adw.HeaderBar {
+                  show-end-title-buttons: false;
+                  [end]
+                  Gtk.MenuButton {
+                    icon-name: "open-menu-symbolic";
+                    tooltip-text: "Main Menu";
+                    menu-model: main_menu;
                   }
-                  Gtk.Box {
+                }
+                content: Gtk.ScrolledWindow {
+                  hscrollbar-policy: never;
+                  child: Gtk.ListBox navigation_list {
+                  sensitive: false;
+                  selection-mode: single;
+                  activate-on-single-click: true;
+                  styles ["navigation-sidebar"]
+                  Gtk.ListBoxRow summary_nav {
+                    child: Gtk.Box {
+                      spacing: 12;
+                      Gtk.Image { icon-name: "view-grid-symbolic"; }
+                      Gtk.Label { label: "Summary"; xalign: 0; }
+                    };
+                  }
+                  Gtk.ListBoxRow send_nav {
+                    child: Gtk.Box {
+                      spacing: 12;
+                      Gtk.Image { icon-name: "network-transmit-symbolic"; }
+                      Gtk.Label { label: "Send to PS4"; xalign: 0; }
+                    };
+                  }
+                  Gtk.ListBoxRow extract_nav {
+                    child: Gtk.Box {
+                      spacing: 12;
+                      Gtk.Image { icon-name: "folder-download-symbolic"; }
+                      Gtk.Label { label: "Extract"; xalign: 0; }
+                    };
+                  }
+                  Gtk.ListBoxRow convert_nav {
+                    child: Gtk.Box {
+                      spacing: 12;
+                      Gtk.Image { icon-name: "document-save-as-symbolic"; }
+                      Gtk.Label { label: "Convert"; xalign: 0; }
+                    };
+                  }
+                  Gtk.ListBoxRow info_nav {
+                    child: Gtk.Box {
+                      spacing: 12;
+                      Gtk.Image { icon-name: "dialog-information-symbolic"; }
+                      Gtk.Label { label: "All Info"; xalign: 0; }
+                    };
+                  }
+                   };
+                 };
+              };
+            };
+            content: Adw.NavigationPage {
+              title: "Package";
+              child: Adw.ToolbarView {
+                [top]
+                Adw.HeaderBar {
+                  show-start-title-buttons: false;
+                  show-back-button: false;
+                  [start]
+                  Gtk.Button navigation_toggle {
+                    icon-name: "sidebar-show-symbolic";
+                    tooltip-text: "Hide Sidebar";
+                  }
+                  [start]
+                  Gtk.Spinner spinner { opacity: 0; }
+                  [end]
+                  Gtk.MenuButton {
+                    icon-name: "open-menu-symbolic";
+                    tooltip-text: "Main Menu";
+                    menu-model: main_menu;
+                    visible: bind details.collapsed;
+                  }
+                }
+                content: Gtk.Stack pages {
+                  transition-type: crossfade;
+                  Adw.StatusPage welcome {
+                    icon-name: "package-x-generic-symbolic";
+                    title: "Look Inside Your Packages";
+                    description: "Drop a package here or open one to inspect its metadata and extract supported fake packages.";
+                    child: Gtk.Button welcome_open {
+                      label: "Open Package…";
+                      halign: center;
+                      styles ["pill", "suggested-action"]
+                    };
+                  }
+                  Gtk.Stack task_pages {
+                transition-type: crossfade;
+                Gtk.ScrolledWindow summary_page {
+                  hscrollbar-policy: never;
+                  child: Adw.Clamp {
+                    maximum-size: 1000;
+                    tightening-threshold: 800;
+                    child: Gtk.Box summary_layout {
+                      orientation: vertical;
+                      spacing: 24;
+                      margin-start: 24;
+                      margin-end: 24;
+                      margin-top: 24;
+                      margin-bottom: 24;
+                      Gtk.Box {
+                        orientation: vertical;
+                        spacing: 16;
+                        valign: start;
+                        Gtk.Image artwork {
+                          icon-name: "package-x-generic-symbolic";
+                          pixel-size: 250;
+                          halign: center;
+                          tooltip-text: "Game artwork";
+                        }
+                        Gtk.Label package_title {
+                          wrap: true;
+                          max-width-chars: 24;
+                          selectable: true;
+                          xalign: 0.5;
+                          justify: center;
+                          styles ["title-1"]
+                        }
+                      }
+                      Adw.PreferencesGroup {
+                        title: "Package Overview";
+                        hexpand: true;
+                        Adw.ActionRow kind { title: "Type"; subtitle-selectable: true; }
+                        Adw.ActionRow title_id { title: "Title ID"; subtitle-selectable: true; }
+                        Adw.ActionRow version { title: "Version"; subtitle-selectable: true; }
+                        Adw.ActionRow size { title: "Package size"; subtitle-selectable: true; }
+                        Adw.ActionRow content_id { title: "Content ID"; subtitle-selectable: true; }
+                        Adw.ActionRow source { title: "Source"; subtitle-selectable: true; }
+                        Adw.ActionRow rap_source { title: "Linked RAP"; subtitle: "None"; subtitle-selectable: true; visible: false; }
+                      }
+                    };
+                  };
+                }
+                Adw.StatusPage send_page {
+                  icon-name: "network-transmit-symbolic";
+                  title: "Send to PS4";
+                  description: "Enable GoldHEN’s BinLoader Server, then send this package over your local network. Keep this computer awake until transfer completes.";
+                  child: Gtk.Box {
                     orientation: vertical;
                     spacing: 12;
-                    hexpand: true;
-                    Adw.PreferencesGroup {
-                      title: "Package Overview";
-                      Adw.ActionRow kind { title: "Type"; subtitle-selectable: true; }
-                      Adw.ActionRow title_id { title: "Title ID"; subtitle-selectable: true; }
-                      Adw.ActionRow version { title: "Version"; subtitle-selectable: true; }
-                      Adw.ActionRow size { title: "Package size"; subtitle-selectable: true; }
-                      Adw.ActionRow content_id { title: "Content ID"; subtitle-selectable: true; }
-                      Adw.ActionRow source { title: "Source"; subtitle-selectable: true; }
-                      Adw.ActionRow rap_source { title: "Linked RAP"; subtitle: "None"; subtitle-selectable: true; visible: false; }
+                    halign: center;
+                    Gtk.Entry send_address {
+                      placeholder-text: "192.168.1.100";
+                      input-purpose: digits;
+                      width-request: 240;
+                      sensitive: false;
+                      accessibility {
+                        label: "PS4 IPv4 address";
+                      }
                     }
-                    Gtk.Label {
-                      label: "Extraction creates a new folder inside your chosen destination. Existing files are never replaced.";
-                      wrap: true;
-                      xalign: 0;
-                      styles ["dim-label"]
+                    Gtk.Button {
+                      label: "Send Package";
+                      action-name: "win.send-ps4";
+                      styles ["pill", "suggested-action"]
                     }
+                  };
+                }
+                Adw.StatusPage extract_page {
+                  icon-name: "folder-download-symbolic";
+                  title: "Extract Package";
+                  description: "Choose a parent folder. A new extraction folder is created and existing files are never replaced.";
+                  child: Gtk.Button extract {
+                    label: "Choose Destination…";
+                    halign: center;
+                    sensitive: false;
+                    styles ["pill", "suggested-action"]
+                  };
+                }
+                Adw.StatusPage convert_page {
+                  icon-name: "document-save-as-symbolic";
+                  title: "Convert Package";
+                  description: "Convert PS4 packages to ZAR, or link a RAP license and liberate PS3 content.";
+                  child: Gtk.Box convert_actions {
+                    orientation: horizontal;
+                    spacing: 12;
+                    halign: center;
+                    Gtk.Button { label: "Convert to ZAR…"; action-name: "win.convert"; styles ["pill", "suggested-action"] }
+                    Gtk.Button { label: "Link RAP…"; action-name: "win.link-rap"; styles ["pill"] }
+                    Gtk.Button { label: "Liberate…"; action-name: "win.liberate"; styles ["pill"] }
+                  };
+                }
+                Gtk.ScrolledWindow info_page {
+                  hscrollbar-policy: never;
+                  child: Adw.Clamp {
+                    maximum-size: 680;
+                    child: Gtk.Box {
+                      orientation: vertical;
+                      spacing: 24;
+                      margin-start: 24;
+                      margin-end: 24;
+                      margin-top: 24;
+                      margin-bottom: 24;
+                      Adw.PreferencesGroup {
+                        title: "All Info";
+                        Adw.ActionRow metadata_status { title: "Metadata"; subtitle-selectable: true; }
+                      }
+                      Adw.PreferencesGroup {
+                        title: "Header, SFO &amp; Container Entries";
+                        description: "Header inspection does not verify authenticity or extractability. Binary values show a preview; use CLI JSON for complete raw values.";
+                        Gtk.TextView metadata {
+                          editable: false;
+                          cursor-visible: false;
+                          monospace: true;
+                          wrap-mode: word_char;
+                          top-margin: 16;
+                          bottom-margin: 16;
+                          left-margin: 16;
+                          right-margin: 16;
+                          styles ["card"]
+                        }
+                      }
+                    };
+                  };
+                }
                   }
                 };
               };
-            }
-          }
-        }
-      };
-    };
-  };
-}
-
-Adw.Dialog info_dialog {
-  title: "All Info";
-  content-width: 640;
-  content-height: 520;
-  child: Adw.ToolbarView {
-    [top]
-    Adw.HeaderBar {}
-    content: Gtk.ScrolledWindow {
-      hscrollbar-policy: never;
-      child: Adw.Clamp {
-        maximum-size: 680;
-        child: Gtk.Box {
-          orientation: vertical;
-          spacing: 24;
-          margin-start: 24;
-          margin-end: 24;
-          margin-top: 16;
-          margin-bottom: 24;
-          Adw.PreferencesGroup {
-            Adw.ActionRow metadata_status { title: "Metadata"; subtitle-selectable: true; }
-          }
-          Adw.PreferencesGroup {
-            title: "Header, SFO &amp; Container Entries";
-            description: "Header inspection does not verify authenticity or extractability. Binary values show a preview; use CLI JSON for complete raw values.";
-            Gtk.TextView metadata {
-              editable: false;
-              cursor-visible: false;
-              monospace: true;
-              wrap-mode: word_char;
-              top-margin: 16;
-              bottom-margin: 16;
-              left-margin: 16;
-              right-margin: 16;
-              styles ["card"]
-            }
-          }
-        };
-      };
+            };
     };
   };
 }

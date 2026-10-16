@@ -16,7 +16,7 @@ use std::{
 
 struct Ui {
     window: glib::WeakRef<adw::ApplicationWindow>,
-    open: gtk::Button,
+    open: gio::SimpleAction,
     welcome_open: gtk::Button,
     extract: gtk::Button,
     convert: gio::SimpleAction,
@@ -26,9 +26,16 @@ struct Ui {
     rap_source: adw::ActionRow,
     rap: RefCell<Option<PathBuf>>,
     pages: gtk::Stack,
-    details: gtk::Box,
-    info_dialog: adw::Dialog,
-    all_info: gio::SimpleAction,
+    details: adw::NavigationSplitView,
+    navigation_list: gtk::ListBox,
+    navigation_toggle: gtk::Button,
+    task_pages: gtk::Stack,
+    summary_page: gtk::ScrolledWindow,
+    send_page: adw::StatusPage,
+    send_address: gtk::Entry,
+    extract_page: adw::StatusPage,
+    convert_page: adw::StatusPage,
+    info_page: gtk::ScrolledWindow,
     artwork: gtk::Image,
     title_id: adw::ActionRow,
     version: adw::ActionRow,
@@ -61,9 +68,49 @@ enum Operation {
 }
 
 impl Ui {
+    fn show_task(&self, index: i32) {
+        let page: &gtk::Widget = match index {
+            0 => self.summary_page.upcast_ref(),
+            1 => self.send_page.upcast_ref(),
+            2 => self.extract_page.upcast_ref(),
+            3 => self.convert_page.upcast_ref(),
+            _ => self.info_page.upcast_ref(),
+        };
+        self.task_pages.set_visible_child(page);
+        self.details.set_show_content(true);
+    }
+
+    fn toggle_sidebar(&self) {
+        if self.details.is_collapsed() {
+            if self
+                .window
+                .upgrade()
+                .is_some_and(|window| window.width() > 600)
+            {
+                self.details.set_collapsed(false);
+            } else {
+                self.details.set_show_content(!self.details.shows_content());
+            }
+        } else {
+            self.details.set_collapsed(true);
+            self.details.set_show_content(true);
+        }
+    }
+
+    fn update_sidebar_toggle(&self) {
+        let tooltip = if !self.details.is_collapsed() {
+            "Hide Sidebar"
+        } else if self.details.shows_content() {
+            "Show Sidebar"
+        } else {
+            "Show Package"
+        };
+        self.navigation_toggle.set_tooltip_text(Some(tooltip));
+    }
+
     fn busy(&self, busy: bool, label: &str) {
         self.busy.set(busy);
-        self.open.set_sensitive(!busy);
+        self.open.set_enabled(!busy);
         self.welcome_open.set_sensitive(!busy);
         self.extract
             .set_sensitive(!busy && self.path.borrow().is_some());
@@ -71,6 +118,8 @@ impl Ui {
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
         self.send_ps4
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
+        self.send_address
+            .set_sensitive(!busy && self.path.borrow().is_some() && self.can_convert.get());
         let ps3 = self.path.borrow().is_some() && !self.can_convert.get();
         self.link_rap.set_enabled(!busy && ps3);
         self.liberate.set_enabled(!busy);
@@ -216,8 +265,11 @@ impl Ui {
                     ui.metadata_status.set_subtitle(&details.status);
                     ui.metadata.buffer().set_text(&details.metadata);
                     *ui.path.borrow_mut() = Some(path);
-                    ui.pages.set_visible_child(&ui.details);
-                    ui.all_info.set_enabled(true);
+                    ui.navigation_list
+                        .select_row(ui.navigation_list.row_at_index(0).as_ref());
+                    ui.show_task(0);
+                    ui.pages.set_visible_child(&ui.task_pages);
+                    ui.navigation_list.set_sensitive(true);
                 }
                 Ok(Err(e)) => ui.error("Could Not Read Package", &e),
                 Err(_) => ui.error(
@@ -738,36 +790,18 @@ impl Ui {
         if self.busy.get() || !self.can_convert.get() {
             return;
         }
-        let entry = gtk::Entry::builder()
-            .placeholder_text("192.168.1.100")
-            .input_purpose(gtk::InputPurpose::Digits)
-            .activates_default(true)
-            .build();
-        let dialog = adw::AlertDialog::builder()
-            .heading("Send to PS4")
-            .body("Enable GoldHEN Settings → BinLoader Server, then enter the PS4's IPv4 address. The PC must stay awake until transfer completes.")
-            .extra_child(&entry)
-            .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("send", "Send");
-        dialog.set_response_appearance("send", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("send"));
-        dialog.set_close_response("cancel");
-        let ui = self.clone();
-        glib::spawn_future_local(async move {
-            if dialog.choose_future(ui.window.upgrade().as_ref()).await != "send" {
+        let ps4 = match self.send_address.text().parse::<std::net::Ipv4Addr>() {
+            Ok(ip) if !ip.is_unspecified() && !ip.is_multicast() => ip,
+            _ => {
+                self.error(
+                    "Invalid PS4 Address",
+                    "Enter a valid IPv4 address, for example 192.168.1.100.",
+                );
                 return;
             }
-            let ps4 = match entry.text().parse::<std::net::Ipv4Addr>() {
-                Ok(ip) if !ip.is_unspecified() && !ip.is_multicast() => ip,
-                _ => {
-                    ui.error(
-                        "Invalid PS4 Address",
-                        "Enter a valid IPv4 address, for example 192.168.1.100.",
-                    );
-                    return;
-                }
-            };
+        };
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
             let Some(path) = ui.path.borrow().clone() else {
                 return;
             };
@@ -851,7 +885,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
     window.set_application(Some(app));
     let ui = Rc::new(Ui {
         window: window.downgrade(),
-        open: builder.object("open").unwrap(),
+        open: gio::SimpleAction::new("open", None),
         welcome_open: builder.object("welcome_open").unwrap(),
         extract: builder.object("extract").unwrap(),
         convert: gio::SimpleAction::new("convert", None),
@@ -862,8 +896,15 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         rap: RefCell::new(None),
         pages: builder.object("pages").unwrap(),
         details: builder.object("details").unwrap(),
-        info_dialog: builder.object("info_dialog").unwrap(),
-        all_info: gio::SimpleAction::new("all-info", None),
+        navigation_list: builder.object("navigation_list").unwrap(),
+        navigation_toggle: builder.object("navigation_toggle").unwrap(),
+        task_pages: builder.object("task_pages").unwrap(),
+        summary_page: builder.object("summary_page").unwrap(),
+        send_page: builder.object("send_page").unwrap(),
+        send_address: builder.object("send_address").unwrap(),
+        extract_page: builder.object("extract_page").unwrap(),
+        convert_page: builder.object("convert_page").unwrap(),
+        info_page: builder.object("info_page").unwrap(),
         artwork: builder.object("artwork").unwrap(),
         title_id: builder.object("title_id").unwrap(),
         version: builder.object("version").unwrap(),
@@ -887,13 +928,43 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         can_convert: Cell::new(false),
         details_data: RefCell::new(None),
     });
-    for button in [&ui.open, &ui.welcome_open] {
-        button.connect_clicked(glib::clone!(
-            #[weak]
-            ui,
-            move |_| ui.choose_package()
-        ));
-    }
+    ui.welcome_open.connect_clicked(glib::clone!(
+        #[weak]
+        ui,
+        move |_| ui.choose_package()
+    ));
+    ui.navigation_list.select_row(Some(
+        &builder.object::<gtk::ListBoxRow>("summary_nav").unwrap(),
+    ));
+    ui.navigation_list.connect_row_selected(glib::clone!(
+        #[weak]
+        ui,
+        move |_, row| {
+            if let Some(row) = row {
+                ui.show_task(row.index());
+            }
+        }
+    ));
+    ui.navigation_list.connect_row_activated(glib::clone!(
+        #[weak]
+        ui,
+        move |_, row| ui.show_task(row.index())
+    ));
+    ui.navigation_toggle.connect_clicked(glib::clone!(
+        #[weak]
+        ui,
+        move |_| ui.toggle_sidebar()
+    ));
+    ui.details.connect_collapsed_notify(glib::clone!(
+        #[weak]
+        ui,
+        move |_| ui.update_sidebar_toggle()
+    ));
+    ui.details.connect_show_content_notify(glib::clone!(
+        #[weak]
+        ui,
+        move |_| ui.update_sidebar_toggle()
+    ));
     let drop_target = gtk::DropTarget::new(
         gtk::gdk::FileList::static_type(),
         gtk::gdk::DragAction::COPY,
@@ -940,6 +1011,11 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         move |_, _| ui.choose_ps4()
     ));
     window.add_action(&ui.send_ps4);
+    ui.send_address.connect_activate(glib::clone!(
+        #[weak]
+        ui,
+        move |_| ui.choose_ps4()
+    ));
     ui.link_rap.set_enabled(false);
     ui.link_rap.connect_activate(glib::clone!(
         #[weak]
@@ -954,16 +1030,6 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         move |_, _| ui.choose_liberation()
     ));
     window.add_action(&ui.liberate);
-    let open = gio::SimpleAction::new("open", None);
-    ui.all_info.set_enabled(false);
-    ui.all_info.connect_activate(glib::clone!(
-        #[weak]
-        ui,
-        move |_, _| {
-            ui.info_dialog.present(ui.window.upgrade().as_ref());
-        }
-    ));
-    window.add_action(&ui.all_info);
     let about = gio::SimpleAction::new("about", None);
     about.connect_activate(glib::clone!(
         #[weak]
@@ -1010,12 +1076,12 @@ fn build(app: &adw::Application) -> Rc<Ui> {
             ui.cancel_extraction();
         }
     ));
-    open.connect_activate(glib::clone!(
+    ui.open.connect_activate(glib::clone!(
         #[weak]
         ui,
         move |_, _| ui.choose_package()
     ));
-    window.add_action(&open);
+    window.add_action(&ui.open);
     app.set_accels_for_action("win.open", &["<Control>o"]);
     window.connect_close_request(glib::clone!(
         #[weak]
@@ -1076,12 +1142,24 @@ mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let ui = build(&app);
+        assert!(ui.details.is_ancestor(&ui.toasts));
+        let sidebar_icon = ui.navigation_toggle.icon_name();
+        ui.details.set_collapsed(true);
+        ui.details.set_show_content(false);
+        assert_eq!(ui.navigation_toggle.icon_name(), sidebar_icon);
+        ui.details.set_show_content(true);
+        ui.details.set_collapsed(false);
+        assert_eq!(ui.navigation_toggle.icon_name(), sidebar_icon);
         assert!(!ui.extract.is_sensitive());
         assert!(!ui.convert.is_enabled());
         assert!(!ui.send_ps4.is_enabled());
+        assert!(!ui.send_address.is_sensitive());
         assert!(!ui.link_rap.is_enabled());
         assert!(ui.liberate.is_enabled());
-        assert!(!ui.all_info.is_enabled());
+        assert_eq!(
+            ui.task_pages.visible_child(),
+            Some(ui.summary_page.clone().upcast())
+        );
         ui.liberate.activate(None);
         let context = glib::MainContext::default();
         while ui.window.upgrade().unwrap().visible_dialog().is_none() {
@@ -1166,6 +1244,7 @@ mod tests {
         assert!(ui.extract.is_sensitive());
         assert_eq!(ui.convert.is_enabled(), expected.can_convert);
         assert_eq!(ui.send_ps4.is_enabled(), expected.can_convert);
+        assert_eq!(ui.send_address.is_sensitive(), expected.can_convert);
         assert_eq!(ui.link_rap.is_enabled(), !expected.can_convert);
         assert_eq!(ui.rap_source.is_visible(), !expected.can_convert);
         assert!(ui.liberate.is_enabled());
@@ -1216,7 +1295,10 @@ mod tests {
             }
         }
         assert!(!ui.title.text().is_empty());
-        assert_eq!(ui.pages.visible_child(), Some(ui.details.clone().upcast()));
+        assert_eq!(
+            ui.pages.visible_child(),
+            Some(ui.task_pages.clone().upcast())
+        );
         if expected.icon.is_some() {
             assert!(ui.artwork.paintable().is_some());
         } else {
@@ -1231,16 +1313,17 @@ mod tests {
             ui.kind.subtitle().as_deref(),
             Some("Game" | "Patch" | "Game data / patch")
         ));
-        assert!(ui.all_info.is_enabled());
-        ui.all_info.activate(None);
+        ui.navigation_list
+            .select_row(ui.navigation_list.row_at_index(4).as_ref());
         assert_eq!(
-            ui.window.upgrade().unwrap().visible_dialog(),
-            Some(ui.info_dialog.clone())
+            ui.task_pages.visible_child(),
+            Some(ui.info_page.clone().upcast())
         );
-        assert!(ui.info_dialog.can_close());
         assert!(ui.metadata.buffer().char_count() > 0);
-        assert!(ui.info_dialog.close());
-        assert_eq!(ui.pages.visible_child(), Some(ui.details.clone().upcast()));
+        assert_eq!(
+            ui.pages.visible_child(),
+            Some(ui.task_pages.clone().upcast())
+        );
         ui.busy(true, "Extracting package…");
         ui.show_extraction();
         assert!(!ui.extraction_dialog.can_close());
