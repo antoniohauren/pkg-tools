@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Details {
     pub can_convert: bool,
     pub title: String,
@@ -17,6 +17,7 @@ pub struct Details {
     pub title_id: String,
     pub version: String,
     pub kind: String,
+    pub category: String,
     pub icon: Option<Vec<u8>>,
 }
 
@@ -209,6 +210,7 @@ pub fn inspect(path: &Path) -> Result<Details, String> {
         title_id: "Unknown".into(),
         version: "Unknown".into(),
         kind: "Unknown".into(),
+        category: "gd".into(),
         icon: None,
         metadata: format!(
             "Format: PS4 PKG\nFlags: {:#x}\nDRM type: {:#x}\nContent type: {:#x}\nContent flags: {:#x}\nContainer entries: {}\nEntry table offset: {}\nBody offset: {}\nBody size: {}\nPFS flags: {:#x}\nPFS offset: {}\nPFS size: {}\n",
@@ -273,7 +275,10 @@ fn apply_sfo(details: &mut Details, bytes: &[u8]) -> Result<(), String> {
             match entry.key {
                 b"TITLE_ID" => details.title_id = text(bytes),
                 b"APP_VER" => details.version = text(bytes),
-                b"CATEGORY" => details.kind = category(bytes),
+                b"CATEGORY" => {
+                    details.kind = category(bytes);
+                    details.category = text(bytes);
+                }
                 _ => {}
             }
         }
@@ -314,6 +319,7 @@ fn inspect_ps3(reader: BufReader<File>, path: &Path) -> Result<Details, String> 
         title_id: "Unknown".into(),
         version: "Unknown".into(),
         kind: "Unknown".into(),
+        category: String::new(),
         icon: None,
         metadata: format!(
             "Source: {}\nFormat: PS3 PKG\nPackage size: {} bytes\nRelease type: {:#x}\nPlatform: {}\nPackage entries: {}\nMetadata offset: {}\nMetadata count: {}\nMetadata size: {}\nData offset: {}\nData size: {}\nSignatures: unverified\n",

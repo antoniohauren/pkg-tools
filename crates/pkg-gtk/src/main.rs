@@ -1,4 +1,5 @@
 mod package;
+mod ps4_send;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -19,6 +20,7 @@ struct Ui {
     welcome_open: gtk::Button,
     extract: gtk::Button,
     convert: gio::SimpleAction,
+    send_ps4: gio::SimpleAction,
     link_rap: gio::SimpleAction,
     liberate: gio::SimpleAction,
     rap_source: adw::ActionRow,
@@ -48,6 +50,7 @@ struct Ui {
     path: RefCell<Option<PathBuf>>,
     busy: Cell<bool>,
     can_convert: Cell<bool>,
+    details_data: RefCell<Option<package::Details>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,6 +68,8 @@ impl Ui {
         self.extract
             .set_sensitive(!busy && self.path.borrow().is_some());
         self.convert
+            .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
+        self.send_ps4
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
         let ps3 = self.path.borrow().is_some() && !self.can_convert.get();
         self.link_rap.set_enabled(!busy && ps3);
@@ -179,6 +184,7 @@ impl Ui {
             match result {
                 Ok(Ok(details)) => {
                     ui.can_convert.set(details.can_convert);
+                    *ui.details_data.borrow_mut() = Some(details.clone());
                     *ui.rap.borrow_mut() = None;
                     ui.rap_source.set_subtitle("None");
                     ui.rap_source.set_visible(!details.can_convert);
@@ -620,7 +626,7 @@ impl Ui {
             });
             ui.show_extraction();
             let cancellation = ui.cancellation.clone();
-            let progress = Arc::new(Mutex::new(None));
+            let progress = Arc::new(Mutex::new(None::<(u64, u64)>));
             let worker_progress = progress.clone();
             let mut last_sample = Instant::now();
             let mut last_written = 0;
@@ -727,6 +733,116 @@ impl Ui {
             }
         });
     }
+
+    fn choose_ps4(self: &Rc<Self>) {
+        if self.busy.get() || !self.can_convert.get() {
+            return;
+        }
+        let entry = gtk::Entry::builder()
+            .placeholder_text("192.168.1.100")
+            .input_purpose(gtk::InputPurpose::Digits)
+            .activates_default(true)
+            .build();
+        let dialog = adw::AlertDialog::builder()
+            .heading("Send to PS4")
+            .body("Enable GoldHEN Settings → BinLoader Server, then enter the PS4's IPv4 address. The PC must stay awake until transfer completes.")
+            .extra_child(&entry)
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("send", "Send");
+        dialog.set_response_appearance("send", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("send"));
+        dialog.set_close_response("cancel");
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            if dialog.choose_future(ui.window.upgrade().as_ref()).await != "send" {
+                return;
+            }
+            let ps4 = match entry.text().parse::<std::net::Ipv4Addr>() {
+                Ok(ip) if !ip.is_unspecified() && !ip.is_multicast() => ip,
+                _ => {
+                    ui.error(
+                        "Invalid PS4 Address",
+                        "Enter a valid IPv4 address, for example 192.168.1.100.",
+                    );
+                    return;
+                }
+            };
+            let Some(path) = ui.path.borrow().clone() else {
+                return;
+            };
+            let Some(details) = ui.details_data.borrow().clone() else {
+                return;
+            };
+            ui.busy(true, "Sending to PS4…");
+            ui.extraction_dialog.set_title("Sending to PS4");
+            ui.show_extraction();
+            ui.extraction_status
+                .set_label("Connecting to GoldHEN BinLoader…");
+            ui.extraction_transfer.set_label("Waiting for PS4…");
+            let cancellation = ui.cancellation.clone();
+            let progress = Arc::new(Mutex::new(None::<(u64, u64)>));
+            let worker_progress = progress.clone();
+            let mut last_sample = Instant::now();
+            let mut last_written = 0;
+            let timer = glib::timeout_add_local(
+                Duration::from_millis(250),
+                glib::clone!(
+                    #[weak]
+                    ui,
+                    #[upgrade_or]
+                    glib::ControlFlow::Break,
+                    move || {
+                        if let Some((written, total)) = *progress.lock().unwrap() {
+                            let now = Instant::now();
+                            let rate = written.saturating_sub(last_written) as f64
+                                / now.duration_since(last_sample).as_secs_f64();
+                            ui.update_progress(written, total, rate);
+                            ui.extraction_status.set_label(if written == total {
+                                "Queueing installation…"
+                            } else {
+                                "Sending package…"
+                            });
+                            last_written = written;
+                            last_sample = now;
+                        } else {
+                            ui.extraction_progress.pulse();
+                        }
+                        glib::ControlFlow::Continue
+                    }
+                ),
+            );
+            let result = gio::spawn_blocking(move || {
+                ps4_send::send(
+                    &path,
+                    ps4_send::PackageInfo {
+                        name: &details.title,
+                        content_id: &details.content_id,
+                        category: &details.category,
+                        size: details.size,
+                        icon: details.icon.as_deref(),
+                    },
+                    ps4,
+                    cancellation,
+                    |written, total| *worker_progress.lock().unwrap() = Some((written, total)),
+                )
+            })
+            .await;
+            timer.remove();
+            ui.extraction_dialog.force_close();
+            ui.busy(false, "");
+            match result {
+                Ok(Ok(())) => ui.toasts.add_toast(adw::Toast::new(
+                    "Package transferred; installation queued on PS4.",
+                )),
+                Ok(Err(e)) => ui.error("Could Not Send Package", &e),
+                Err(_) => ui.error(
+                    "Could Not Send Package",
+                    "The transfer worker stopped unexpectedly.",
+                ),
+            }
+        });
+    }
 }
 
 fn build(app: &adw::Application) -> Rc<Ui> {
@@ -739,6 +855,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         welcome_open: builder.object("welcome_open").unwrap(),
         extract: builder.object("extract").unwrap(),
         convert: gio::SimpleAction::new("convert", None),
+        send_ps4: gio::SimpleAction::new("send-ps4", None),
         link_rap: gio::SimpleAction::new("link-rap", None),
         liberate: gio::SimpleAction::new("liberate", None),
         rap_source: builder.object("rap_source").unwrap(),
@@ -768,6 +885,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         path: RefCell::new(None),
         busy: Cell::new(false),
         can_convert: Cell::new(false),
+        details_data: RefCell::new(None),
     });
     for button in [&ui.open, &ui.welcome_open] {
         button.connect_clicked(glib::clone!(
@@ -815,6 +933,13 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         move |_, _| ui.choose_destination(Operation::Convert)
     ));
     window.add_action(&ui.convert);
+    ui.send_ps4.set_enabled(false);
+    ui.send_ps4.connect_activate(glib::clone!(
+        #[weak]
+        ui,
+        move |_, _| ui.choose_ps4()
+    ));
+    window.add_action(&ui.send_ps4);
     ui.link_rap.set_enabled(false);
     ui.link_rap.connect_activate(glib::clone!(
         #[weak]
@@ -953,6 +1078,7 @@ mod tests {
         let ui = build(&app);
         assert!(!ui.extract.is_sensitive());
         assert!(!ui.convert.is_enabled());
+        assert!(!ui.send_ps4.is_enabled());
         assert!(!ui.link_rap.is_enabled());
         assert!(ui.liberate.is_enabled());
         assert!(!ui.all_info.is_enabled());
@@ -1039,6 +1165,7 @@ mod tests {
         assert_eq!(ui.path.borrow().as_ref(), Some(&PathBuf::from(&path)));
         assert!(ui.extract.is_sensitive());
         assert_eq!(ui.convert.is_enabled(), expected.can_convert);
+        assert_eq!(ui.send_ps4.is_enabled(), expected.can_convert);
         assert_eq!(ui.link_rap.is_enabled(), !expected.can_convert);
         assert_eq!(ui.rap_source.is_visible(), !expected.can_convert);
         assert!(ui.liberate.is_enabled());

@@ -64,6 +64,11 @@ cargo run --release -p pkg-gtk -- /path/to/game.pkg
 ```
 
 Use **Open** (Ctrl+O) or drop a single package anywhere in the window to inspect it.
+For a loaded PS4 package, **Send to PS4…** serves the local file over HTTP and
+sends the DirectPackageInstaller payload to GoldHEN BinLoader. Enable GoldHEN's
+BinLoader Server, enter the console's LAN IPv4 address, and keep the computer
+awake until transfer completes. HTTP byte ranges are supported; remote URLs and
+proxy downloads are not.
 Drops are ignored while an operation is active. **Extract** asks for a parent folder
 and creates `<package-stem>-extracted` inside it. Generated extraction and liberation
 folder names are capped at 31 UTF-8 bytes (preserving the suffix) to avoid RPCS3's
