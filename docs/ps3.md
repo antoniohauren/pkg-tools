@@ -3,7 +3,8 @@
 `ps3-pkg` reads complete PS3-platform (`1`) packages with release type `0x8000`
 (normal retail AES-128-CTR) or `0` (debug SHA-1 stream). CLI `inspect` and
 `extract`, and the GTK application, detect PS3 by `7f 50 4b 47` magic. GTK shows
-SFO metadata/artwork and supports extraction progress/cancellation. ZAR
+SFO metadata/artwork and an **Explore** application tree, with full or selected
+extraction and progress/cancellation. ZAR
 conversion remains PS4-only and is disabled for PS3 in the GUI.
 
 ```sh
@@ -16,6 +17,15 @@ raw `metadata`, sorted `entries`, `read_param_sfo`, `read_icon0`, borrowed
 `read_entry` (`Read + Seek`), and `extract[_with_cancel|_with_progress]`.
 Entries include inferred parents; `header.entry_count` counts original records.
 Flags retain the overwrite bit as metadata; extraction never overwrites.
+
+`Package::extract_selected_with_progress(output, &["USRDIR"], cancelled, progress)`
+extracts exact paths and directory subtrees, deduplicating overlaps and preserving
+required parents and empty selected folders. Empty/unknown selections fail before
+output; progress totals count selected files' decoded bytes only. Shared
+`pkg_ops::list` and `pkg_ops::extract_selected` dispatch both package formats.
+See [Explore/API contract](extraction.md#explore-and-selective-extraction-ps3-and-ps4)
+for selection, source stability and output-safety rules. Listing writes no files
+and does not decode nested SELF/EDAT/SDAT payloads.
 
 ## Supported boundary
 

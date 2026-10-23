@@ -48,12 +48,17 @@ and the error reports its location. See [conversion checks](docs/zarchive.md#pkg
 `pkg-gtk` provides a native Rust GTK4/libadwaita interface for PS3 and PS4, authored in
 Blueprint. Overview shows game artwork, title, title ID, application version,
 game/patch type, package size, content ID and source. A collapsible task sidebar groups
-the summary, transfer, extraction, conversion and **All Info** views. All Info contains headers,
+the summary, transfer, **Explore**, conversion and **All Info** views. All Info contains headers,
 SFO metadata and container records. Binary metadata previews stop at 64 bytes;
 use CLI JSON for complete raw values. Artwork must be a PNG no larger than
 4 MiB with dimensions up to 2048 × 2048. Unreadable artwork falls back to a
 package icon; unknown metadata is labeled explicitly. Inspection and extraction
-run on background workers.
+run on background workers, as does Explore listing preparation.
+
+Main menu **Use PS4 pic1.png** switches the summary to wide PS4 artwork,
+falling back to `icon0.png` when missing or unreadable. The preference is saved
+in `~/.config/pkg-tools/preferences.ini` (or `$XDG_CONFIG_HOME/pkg-tools/preferences.ini`).
+Images retain their original proportions; PS3 artwork and PS4 transfer icons are unchanged.
 
 Install GTK **4.10+**, libadwaita **1.5+** development packages, `pkg-config`,
 and `blueprint-compiler`, then run:
@@ -77,8 +82,16 @@ in file-picker order using one installer payload. All selected packages are chec
 before sending starts. Progress shows the current package and its transferred bytes.
 Cancel or an error stops the batch; already transferred packages remain on the PS4.
 Transfer completion does not confirm installation success; check the console.
-Drops are ignored while an operation is active. **Extract** asks for a parent folder
-and creates `<package-stem>-extracted` inside it. Generated extraction and liberation
+Drops are ignored while an operation is active. **Explore** browses an expandable,
+multi-select application file tree with decoded file sizes, without extracting a
+temporary tree. Use the keyboard or Ctrl/Shift-click to select files and folders.
+**Extract All…** extracts the complete application; **Extract Selected…** extracts
+selected files and folder subtrees, preserving package-relative paths, required
+parents and empty selected folders. Overlapping selections write each entry once;
+the selected action is disabled when nothing is selected. Listings and selections
+persist across page changes and reset when another package is loaded.
+Both actions ask for a parent folder and create `<package-stem>-extracted` inside
+it. Generated extraction and liberation
 folder names are capped at 31 UTF-8 bytes (preserving the suffix) to avoid RPCS3's
 HDD-game directory-name assertion. That directory must not already
 exist. Errors include the partial output path when extraction fails. Extraction
@@ -93,6 +106,14 @@ names its location. Remove that output folder before retrying, or choose a
 different parent. The library's format and extraction limits below also apply
 to the GUI. Use release builds for extraction: debug crypto/decompression is
 substantially slower.
+
+Explore uses virtualized rows and creates child models on expansion, but tree
+metadata still consumes memory proportional to entry/path count within the format
+limits below. Unsupported package trees show a browse error; header inspection
+alone does not guarantee browsing support. No search, previews or selective CLI
+command is provided. Keep source packages unchanged while browsing/extracting;
+selection identity checks detect application reloads, not external file replacement.
+See [listing and selection API](docs/extraction.md#explore-and-selective-extraction-ps3-and-ps4).
 
 **Convert to ZAR…** in the Convert view converts the loaded base game, optionally with a matching
 update selected in the dialog. Choose a new lowercase `.zar` filename; the update
@@ -157,14 +178,17 @@ glibc. Cross-distribution compatibility must be checked separately.
   BinLoader with sequential batches, HTTP byte ranges, cancellation and progress.
   Callers supply matching package metadata; completion does not confirm installation.
   Its bundled payload and license live in `crates/ps4-send/data/dpi-payload`.
-- `pkg_ops` owns shared PS3/PS4 extraction dispatch, PS3 liberation input handling
+- `pkg_ops` owns shared PS3/PS4 listing and extraction dispatch, PS3 liberation input handling
   and PS4-to-ZAR conversion. CLI and GTK depend on it directly; presentation and
   command-line reporting remain in their respective frontends.
+  Use `pkg_ops::list` for read-only application paths, kinds and decoded sizes;
+  `pkg_ops::extract_selected` extracts exact paths and their subtrees.
   Use `pkg_ops::extract`, `pkg_ops::liberate::liberate` and
   `pkg_ops::convert::run_with_progress` for cancellable operations with byte progress.
 - `ps3_pkg::Package::open(reader)` exposes `header()`, raw `metadata()`, sorted
   `entries()`, `read_param_sfo()`, `read_icon0()`, and streaming `read_entry(index)`.
-  `extract`, `extract_with_cancel` and `extract_with_progress` write a new tree.
+  `extract`, `extract_with_cancel` and `extract_with_progress` write a new tree;
+  `extract_selected_with_progress` writes selected paths and subtrees.
   See [PS3 contracts and limits](docs/ps3.md).
 - `zarchive::Writer::create(output)` accepts `add_directory(path)` and
   `add_file(path, size, reader)` calls, parents first; `finish()` publishes.
@@ -183,8 +207,10 @@ glibc. Cross-distribution compatibility must be checked separately.
   cancellation with the same no-overwrite and incomplete-output rules.
   `game.extract_with_progress(output_dir, || cancelled, |written, total| ...)`
   reports `(0, total)` initially and decoded bytes after each output chunk.
-  A successful return, rather than the byte count, confirms completion.
-- `package.read_icon0()` reads plaintext artwork up to 4 MiB without opening PFS;
+   A successful return, rather than the byte count, confirms completion.
+  `game.extract_selected_with_progress(output_dir, &["path"], || cancelled,
+  |written, total| ...)` applies the same rules to selected paths and subtrees.
+- `package.read_icon0()` and `package.read_pic1()` read plaintext artwork up to 4 MiB without opening PFS;
   missing artwork returns `None`, while encrypted artwork returns an error.
 
 ```rust,ignore
@@ -260,7 +286,12 @@ PKG_TOOLS_TEST_PACKAGE=/absolute/path/to/game.pkg \
   cargo test -p pkg-gtk blueprint_window_and_package_loading -- --ignored
 ```
 
-The graphical smoke test is ignored unless explicitly requested.
+The graphical smoke test is ignored unless explicitly requested. A separate
+[Explore smoke test](tests/fixtures/README.md#explore-graphical-smoke-test) uses
+synthetic PS3/PS4 fixtures and checks browsing, selection, both extraction buttons,
+the in-process destination picker, cancellation and stale-selection rejection.
+See [Explore validation](docs/explore-plan.md#7-document-and-validate) for executed
+checks and remaining manual limits.
 Coverage includes parsing, bounded artwork,
 GUI metadata helpers, key recovery, crypto known answers, nested
 PFS/PFSC, direct/single/double-indirect reads, >4 GiB virtual files/offsets,

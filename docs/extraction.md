@@ -106,6 +106,71 @@ PFS modes, non-64-KiB PFS blocks, symlinks/special nodes, fragmented unsigned
 files, triple indirection and individually compressed inner files. PFSC block
 sizes 4..64 KiB (powers of two) are parsed, but only 64 KiB has real evidence.
 
+## Explore and selective extraction (PS3 and PS4)
+
+The GTK **Explore** page lists the application tree without writing output or a
+temporary extracted tree. PS3 keeps original paths (including inferred parents);
+PS4 uses the application layout described above, not container records or PFS
+wrappers. Listing decodes directory metadata, not every file payload. Successful
+browsing does not authenticate payloads or guarantee subsequent reads succeed.
+Existing unsupported-format, path-validation and resource limits still apply;
+selecting a small subtree does not bypass validation of the full namespace.
+
+Shared APIs in `pkg-ops`:
+
+```rust,ignore
+use std::{path::Path, sync::atomic::AtomicBool};
+
+let source = Path::new("game.pkg");
+let entries = pkg_ops::list(source)?;
+// FileEntry: path (slash-separated, relative), kind (File/Directory), size
+// (decoded bytes, zero for directories). Includes empty and inferred directories.
+let cancelled = AtomicBool::new(false);
+pkg_ops::extract_selected(
+    source,
+    Path::new("new-output"),
+    &["data/config.bin", "data/textures"], // Exact paths from this package's listing.
+    &cancelled,
+    |written, total| println!("{written}/{total}"),
+)?;
+```
+
+Use paths returned by `list`, with exact spelling/case, not globs, directory
+prefixes or host filesystem paths. A selected directory includes all descendants.
+Selections are deduplicated, including overlapping folders/files; required parents
+and selected empty directories are preserved. Unrelated entries are excluded.
+Empty selections and unknown/unsafe paths fail before output creation. Full
+extraction remains `pkg_ops::extract`; no selective CLI command was added.
+
+Format-level equivalents are
+`ps3_pkg::Package::extract_selected_with_progress` and
+`ps4_pkg::Game::extract_selected_with_progress`, taking the destination,
+`&[&str]`, cancellation closure and progress closure. Progress starts at `(0, total)`
+and counts only selected files' decoded bytes, not parent directories or source
+bytes. An empty directory or zero-byte file can complete with total zero; only
+successful return confirms completion. `pkg_ops::was_cancelled` recognizes
+cancellation even when wrapped in an incomplete-output error.
+
+Both full and selected extraction require a new output directory with existing
+parents. No overwriting, merging, resume or rollback is supported. Cancellation
+is checked before output and between entries/64 KiB chunks; initial tree
+preparation is not interruptible. Failures after output creation leave
+`.pkg-tools-incomplete` and report the partial tree. Remove that tree before
+retrying or choose another destination. Sources remain read-only and must stay
+unchanged throughout listing/extraction. Library callers must associate selections
+with their source package; the API does not carry a listing identity token.
+
+GTK loads/indexes listings on a worker, caches them until a successful package
+load and rejects stale selections across reloads (including same-path reloads).
+It snapshots selections before opening the destination picker. These checks do
+not detect external changes to package bytes. Rows are virtualized and folder
+models lazy, but bounded metadata memory still scales with paths/entries.
+Search and previews are not implemented.
+
+Executable selection and safety coverage:
+`crates/pkg-ops/tests/{listing,selection}.rs`; [graphical smoke instructions](../tests/fixtures/README.md).
+Expected trees: [selection contract](explore-selection.md).
+
 ## I/O, safety and memory
 
 `Package::open_game()` enumerates first; path/namespace errors occur before
