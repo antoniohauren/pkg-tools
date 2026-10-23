@@ -5,6 +5,28 @@ Research date: 2026-10-13. Format requirements and reference pins belong in
 or a blanket claim of package support. Milestone 3 selects the extraction
 dependencies below; the later candidate table retains historical research.
 
+## Trophy reader
+
+`pkg-ops` reuses the locked `aes` 0.9.3 and `cbc` 0.2.1 primitives for PS4
+ESFM resources, and adds `roxmltree` **0.21.1** for XML rather than an ad-hoc
+parser. It is pure Rust, MIT OR Apache-2.0, MSRV 1.60; its only dependency,
+`memchr`, is already resolved. Default `std,positions` features retain useful
+parse errors. DTDs remain disabled; XML size and node counts are bounded.
+No advisory/source security audit was performed for this addition.
+
+TRP layouts were checked against [RPCS3's TRP header](https://github.com/RPCS3/rpcs3/blob/master/rpcs3/Loader/TRP.h)
+and [shadPS4's TRP header](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/file_format/trp.h).
+NP binding fields follow [shadPS4's binding parser](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/file_format/npbind.cpp);
+the public release key and ESFM derivation are documented on
+[PS4 Developer Wiki](https://www.psdevwiki.com/ps4/Trophy00.trp).
+These are format references, not copied implementation code.
+
+Synthetic tests cover PS3 TRP v1/v2, PS4 v3 encrypted XML, NP binding/fallback
+ID recovery, language preference, missing sets, malformed ranges/XML, and CLI
+output. Private local SSX and TMNT packages were checked without committing
+game assets. Optional GUI test `trophy_page_loading_empty_error_and_stale_worker_states`
+accepts `PKG_TOOLS_TROPHY_FIXTURE=/path/to/game.pkg` for real list/icon rendering.
+
 ## Milestone 6 PS3 dependency selection
 
 `ps3-pkg` reuses `aes` **0.9.3** and adds RustCrypto `sha1` **0.11.0**, defaults

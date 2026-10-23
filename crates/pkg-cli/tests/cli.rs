@@ -6,6 +6,52 @@ use std::{
 };
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn trophy_command_handles_both_platforms_empty_sets_and_invalid_arguments() {
+    for name in ["ps3-list-explicit.pkg", "ps4-selection.pkg"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures")
+            .join(name);
+        let original = fs::read(&path).unwrap();
+        for json in [false, true] {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_pkg-tools"));
+            cmd.arg("trophies").arg(&path);
+            if json {
+                cmd.arg("--json");
+            }
+            let output = cmd.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if json {
+                let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(doc, serde_json::json!({"sets": []}));
+            } else {
+                assert_eq!(output.stdout, b"No trophy sets found.\n");
+            }
+        }
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let invalid = Command::new(env!("CARGO_BIN_EXE_pkg-tools"))
+            .arg("trophies")
+            .arg(&path)
+            .arg("--invalid")
+            .output()
+            .unwrap();
+        assert!(!invalid.status.success());
+    }
+    let input = Input::new(b"invalid package");
+    let output = Command::new(env!("CARGO_BIN_EXE_pkg-tools"))
+        .arg("trophies")
+        .arg(&input.0)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+}
+
 struct Input(PathBuf);
 impl Input {
     fn new(data: &[u8]) -> Self {

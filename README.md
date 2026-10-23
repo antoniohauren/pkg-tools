@@ -10,6 +10,8 @@ fixtures. See [PS3 support](docs/ps3.md) and [PS4 coverage](docs/extraction.md).
 cargo run -p pkg-cli -- inspect INPUT.pkg
 cargo run -p pkg-cli -- inspect INPUT.pkg --json
 cargo run -p pkg-cli -- inspect PARAM.SFO --json
+cargo run --release -p pkg-cli -- trophies INPUT.pkg
+cargo run --release -p pkg-cli -- trophies INPUT.pkg --json
 cargo run --release -p pkg-cli -- extract INPUT.pkg OUTPUT_DIR
 cargo run --release -p pkg-cli -- pack INPUT_DIR OUTPUT.zar
 cargo run --release -p pkg-cli -- convert GAME.pkg Game.zar
@@ -44,6 +46,23 @@ publication is not atomic: if update finalization fails, the completed base stay
 and the error reports its location. See [conversion checks](docs/zarchive.md#pkg-conversion).
 
 ## GNOME application
+
+**Trophies** lists trophy sets directly from loaded PS3/PS4 packages, with icons,
+names, descriptions, grades, hidden flags and group IDs. Reading runs in the
+background without an extracted temporary tree. English definitions are preferred,
+then default/first available language. Hidden trophy text is shown (spoilers).
+These are definitions, not earned status; no profile or console data is read.
+CLI `trophies` provides the same lists as text or JSON (icons omitted from JSON).
+Unreadable sets report an error without hiding other sets; CLI returns failure if
+any set is unreadable. Missing trophy archives produce an empty list.
+
+PS4 uses the existing supported FPKG application reader, not retail decryption.
+Release ESFM text is decrypted with IDs from `sce_sys/npbind.dat` when available;
+otherwise IDs `NPWR00000_00` through `NPWR99999_00` are tried against one encrypted
+XML block. Other suffixes require a matching binding. Unsupported encryption and
+malformed resources are reported explicitly. TRP archives are limited to 64 MiB
+each, 128 MiB combined; XML/icons to 4 MiB each, and 4096 trophies per set.
+Local verification: SSX PS3 (37 trophies), TMNT PS4 base/update (31 each).
 
 `pkg-gtk` provides a native Rust GTK4/libadwaita interface for PS3 and PS4, authored in
 Blueprint. Overview shows game artwork, title, title ID, application version,

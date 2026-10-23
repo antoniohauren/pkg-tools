@@ -10,7 +10,7 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg";
+const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools trophies INPUT.pkg [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg";
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -172,6 +172,52 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         writeln!(io::stdout().lock(), "{USAGE}")?;
+        return Ok(());
+    }
+    if (args.len() == 2 || (args.len() == 3 && args[2] == "--json")) && args[0] == "trophies" {
+        let sets = pkg_ops::trophies::read(std::path::Path::new(&args[1]))?;
+        let mut out = io::stdout().lock();
+        if args.len() == 3 {
+            let sets: Vec<_> = sets
+                .iter()
+                .map(|set| {
+                    json!({
+                        "path": set.path, "title": set.title, "error": set.error,
+                        "trophies": set.trophies.iter().map(|t| json!({
+                            "id": t.id, "name": t.name, "description": t.description,
+                            "grade": t.grade, "hidden": t.hidden, "group": t.group,
+                        })).collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            serde_json::to_writer_pretty(&mut out, &json!({"sets": sets}))?;
+            writeln!(out)?;
+        } else {
+            if sets.is_empty() {
+                writeln!(out, "No trophy sets found.")?;
+            }
+            for set in &sets {
+                writeln!(out, "{} ({})", set.title, set.path)?;
+                if let Some(error) = &set.error {
+                    writeln!(out, "  Unavailable: {error}")?;
+                }
+                for t in &set.trophies {
+                    writeln!(
+                        out,
+                        "  {:03} {}{} — {} [group {}]\n      {}",
+                        t.id,
+                        t.grade,
+                        if t.hidden { " · Hidden" } else { "" },
+                        t.name,
+                        t.group,
+                        t.description
+                    )?;
+                }
+            }
+        }
+        if sets.iter().any(|set| set.error.is_some()) {
+            return Err("one or more trophy sets could not be read".into());
+        }
         return Ok(());
     }
     if args.len() == 4 && args[0] == "liberate" {

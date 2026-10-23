@@ -9,6 +9,9 @@ psf = { path = "../psf" }
 ps3-pkg = { path = "../ps3-pkg" }
 ps4-pkg = { path = "../ps4-pkg" }
 zarchive = { path = "../zarchive" }
+aes = { version = "=0.9.3", default-features = false }
+cbc = { version = "=0.2.1", default-features = false, features = ["block-padding"] }
+roxmltree = "=0.21.1"
 
 [lints]
 workspace = true

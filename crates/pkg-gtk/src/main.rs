@@ -1,5 +1,6 @@
 mod explore;
 mod package;
+mod trophies;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -15,6 +16,7 @@ use std::{
 };
 
 struct Ui {
+    trophies: Rc<trophies::View>,
     window: glib::WeakRef<adw::ApplicationWindow>,
     open: gio::SimpleAction,
     welcome_open: gtk::Button,
@@ -121,6 +123,7 @@ impl Ui {
             1 => self.explore_page.upcast_ref(),
             2 => self.send_page.upcast_ref(),
             3 => self.convert_page.upcast_ref(),
+            5 => self.trophies.widget.upcast_ref(),
             _ => self.info_page.upcast_ref(),
         };
         self.task_pages.set_visible_child(page);
@@ -128,6 +131,9 @@ impl Ui {
         self.details.set_show_content(true);
         if index == 1 {
             self.load_listing();
+        }
+        if index == 5 {
+            self.trophies.load(self.path.borrow().clone());
         }
     }
 
@@ -151,6 +157,7 @@ impl Ui {
     }
 
     fn reset_listing(&self) {
+        self.trophies.reset();
         self.package_generation
             .set(self.package_generation.get() + 1);
         self.explore_requested.set(false);
@@ -258,7 +265,7 @@ impl Ui {
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
         self.send_batch.set_enabled(!busy);
         self.send_address.set_sensitive(!busy);
-        for index in [1, 3, 4] {
+        for index in [1, 3, 4, 5] {
             self.navigation_list
                 .row_at_index(index)
                 .unwrap()
@@ -1135,6 +1142,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
     let window: adw::ApplicationWindow = builder.object("window").unwrap();
     window.set_application(Some(app));
     let ui = Rc::new(Ui {
+        trophies: trophies::View::new(),
         window: window.downgrade(),
         open: gio::SimpleAction::new("open", None),
         welcome_open: builder.object("welcome_open").unwrap(),
@@ -1191,6 +1199,7 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         can_convert: Cell::new(false),
         details_data: RefCell::new(None),
     });
+    ui.task_pages.add_child(&ui.trophies.widget);
     ui.explore_list.set_factory(Some(&explore::factory()));
     ui.explore_list.set_model(Some(&ui.explore_selection));
     ui.explore_selection.connect_selection_changed(glib::clone!(
@@ -1509,6 +1518,7 @@ mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let ui = build(&app);
+        assert!(!ui.navigation_list.row_at_index(5).unwrap().is_sensitive());
         assert!(ui.details.is_ancestor(&ui.toasts));
         let sidebar_icon = ui.navigation_toggle.icon_name();
         ui.details.set_collapsed(true);
@@ -1709,6 +1719,13 @@ mod tests {
             Some(ui.info_page.clone().upcast())
         );
         assert!(ui.metadata.buffer().char_count() > 0);
+        let trophy_nav = ui.navigation_list.row_at_index(5).unwrap();
+        assert!(trophy_nav.is_sensitive());
+        ui.navigation_list.select_row(Some(&trophy_nav));
+        assert_eq!(
+            ui.task_pages.visible_child(),
+            Some(ui.trophies.widget.clone().upcast())
+        );
         assert_eq!(
             ui.pages.visible_child(),
             Some(ui.task_pages.clone().upcast())

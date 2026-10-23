@@ -3,6 +3,7 @@
 pub mod convert;
 pub mod liberate;
 mod listing;
+pub mod trophies;
 
 pub use listing::{FileEntry, FileKind, list};
 
