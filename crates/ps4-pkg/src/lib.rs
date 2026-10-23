@@ -239,6 +239,11 @@ impl<R: Read + Seek> Package<R> {
         self.read_plaintext_entry(0x1200, 4 * 1024 * 1024, "icon0.png exceeds 4 MiB")
     }
 
+    /// Read plaintext pic1.png with the same bounds and encryption handling as icon0.
+    pub fn read_pic1(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        self.read_plaintext_entry(0x1006, 4 * 1024 * 1024, "pic1.png exceeds 4 MiB")
+    }
+
     fn read_plaintext_entry(
         &mut self,
         id: u32,
