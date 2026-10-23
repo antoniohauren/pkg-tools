@@ -2,6 +2,9 @@
 
 pub mod convert;
 pub mod liberate;
+mod listing;
+
+pub use listing::{FileEntry, FileKind, list};
 
 use std::{
     fs::File,
@@ -18,6 +21,36 @@ pub fn extract(
     cancelled: &AtomicBool,
     progress: impl FnMut(u64, u64),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    extract_selection(source, destination, None, cancelled, progress)
+}
+
+/// Extract exact application paths and their subtrees to a new directory.
+/// Includes required parents and deduplicates overlaps. Empty/unknown selections
+/// fail without output; progress reports only selected files' decoded bytes.
+pub fn extract_selected(
+    source: &Path,
+    destination: &Path,
+    selected: &[&str],
+    cancelled: &AtomicBool,
+    progress: impl FnMut(u64, u64),
+) -> Result<(), Box<dyn std::error::Error>> {
+    if selected.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty extraction selection",
+        )
+        .into());
+    }
+    extract_selection(source, destination, Some(selected), cancelled, progress)
+}
+
+fn extract_selection(
+    source: &Path,
+    destination: &Path,
+    selected: Option<&[&str]>,
+    cancelled: &AtomicBool,
+    progress: impl FnMut(u64, u64),
+) -> Result<(), Box<dyn std::error::Error>> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(ps4_pkg::Error::Cancelled.into());
     }
@@ -25,18 +58,29 @@ pub fn extract(
     let mut magic = [0; 4];
     reader.read_exact(&mut magic)?;
     reader.rewind()?;
+    let is_cancelled = || cancelled.load(Ordering::Relaxed);
     if magic == *b"\x7fPKG" {
-        ps3_pkg::Package::open(reader)?.extract_with_progress(
-            destination,
-            || cancelled.load(Ordering::Relaxed),
-            progress,
-        )?;
+        let mut package = ps3_pkg::Package::open(reader)?;
+        if let Some(selected) = selected {
+            package.extract_selected_with_progress(
+                destination,
+                selected,
+                is_cancelled,
+                progress,
+            )?;
+        } else {
+            package.extract_with_progress(destination, is_cancelled, progress)?;
+        }
         return Ok(());
     }
     ps4_pkg::Package::open(reader)
         .and_then(|pkg| pkg.open_game())
         .and_then(|mut game| {
-            game.extract_with_progress(destination, || cancelled.load(Ordering::Relaxed), progress)
+            if let Some(selected) = selected {
+                game.extract_selected_with_progress(destination, selected, is_cancelled, progress)
+            } else {
+                game.extract_with_progress(destination, is_cancelled, progress)
+            }
         })?;
     Ok(())
 }

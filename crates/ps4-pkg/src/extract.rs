@@ -354,13 +354,37 @@ impl<R: Read + Seek> Game<R> {
         cancelled: impl FnMut() -> bool,
         progress: impl FnMut(u64, u64),
     ) -> Result<(), Error> {
+        self.extract_indices(path, 0..self.entries.len(), cancelled, progress)
+    }
+
+    /// Extract selected application paths, including subtrees and required parents.
+    /// Empty/unknown selections fail without creating output. Paths match exactly.
+    /// Progress counts only selected files' decoded bytes; safety matches full extraction.
+    pub fn extract_selected_with_progress(
+        &mut self,
+        path: impl AsRef<Path>,
+        selected: &[&str],
+        cancelled: impl FnMut() -> bool,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<(), Error> {
+        let indices = pkg_fs::selected_indices(self.entries.iter().map(|e| e.path()), selected)?;
+        self.extract_indices(path, indices.iter().copied(), cancelled, progress)
+    }
+
+    fn extract_indices(
+        &mut self,
+        path: impl AsRef<Path>,
+        indices: impl Iterator<Item = usize> + Clone,
+        cancelled: impl FnMut() -> bool,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<(), Error> {
         #[cfg(unix)]
         {
-            disk::extract(self, path.as_ref(), cancelled, progress)
+            disk::extract(self, path.as_ref(), indices, cancelled, progress)
         }
         #[cfg(not(unix))]
         {
-            let _ = (path, cancelled, progress);
+            let _ = (path, indices, cancelled, progress);
             Err(Error::Unsupported(
                 "safe disk extraction currently requires Unix",
             ))
@@ -549,14 +573,15 @@ mod disk {
     pub(super) fn extract<R: Read + Seek>(
         game: &mut Game<R>,
         path: &Path,
+        indices: impl Iterator<Item = usize> + Clone,
         mut cancelled: impl FnMut() -> bool,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<(), Error> {
         if cancelled() {
             return Err(Error::Cancelled);
         }
-        let total = game.entries.iter().try_fold(0u64, |sum, entry| {
-            sum.checked_add(entry.size)
+        let total = indices.clone().try_fold(0u64, |sum, index| {
+            sum.checked_add(game.entries[index].size)
                 .ok_or(Error::LimitExceeded("total extracted size"))
         })?;
         let mut completed = 0;
@@ -565,7 +590,7 @@ mod disk {
         let result = (|| -> Result<(), Error> {
             output.mark_incomplete()?;
             let mut buffer = [0; 65536];
-            for index in 0..game.entries.len() {
+            for index in indices {
                 if cancelled() {
                     return Err(Error::Cancelled);
                 }

@@ -2,6 +2,57 @@
 
 pub const MARKER: &str = ".pkg-tools-incomplete";
 
+/// Resolve exact application paths to enumeration indices, including descendants
+/// and required parents once. Input paths must come from a validated package tree.
+/// Empty or unknown selections fail before extraction creates any output.
+pub fn selected_indices<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+    selected: &[&str],
+) -> std::io::Result<Vec<usize>> {
+    use std::collections::HashSet;
+    use std::io::{Error, ErrorKind};
+
+    if selected.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "empty extraction selection",
+        ));
+    }
+    let selected: HashSet<_> = selected.iter().copied().collect();
+    let mut missing = selected.clone();
+    let mut required = selected.clone();
+    for path in &selected {
+        let mut parent = *path;
+        while let Some((path, _)) = parent.rsplit_once('/') {
+            required.insert(path);
+            parent = path;
+        }
+    }
+    let mut indices = Vec::new();
+    for (index, path) in paths.into_iter().enumerate() {
+        missing.remove(path);
+        let mut included = required.contains(path);
+        let mut parent = path;
+        while !included {
+            let Some((path, _)) = parent.rsplit_once('/') else {
+                break;
+            };
+            included = selected.contains(path);
+            parent = path;
+        }
+        if included {
+            indices.push(index);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "selected path is not in the package application tree",
+        ));
+    }
+    Ok(indices)
+}
+
 pub fn valid_component(name: &str) -> bool {
     let stem = name.split('.').next().unwrap().to_ascii_uppercase();
     name.is_ascii()
@@ -21,6 +72,44 @@ pub fn valid_component(name: &str) -> bool {
 
 #[cfg(unix)]
 pub use disk::Output;
+
+#[cfg(test)]
+mod tests {
+    use super::selected_indices;
+
+    #[test]
+    fn selection_resolves_union_and_parents_in_enumeration_order() {
+        let paths = [
+            "data",
+            "data/nested",
+            "data/nested/file",
+            "data/unused",
+            "database",
+            "database/other",
+            "empty",
+        ];
+        for selected in [
+            vec!["data/nested/file", "data/nested", "data/nested"],
+            vec!["data/nested", "data/nested/file"],
+        ] {
+            assert_eq!(selected_indices(paths, &selected).unwrap(), [0, 1, 2]);
+        }
+        assert_eq!(selected_indices(paths, &["data"]).unwrap(), [0, 1, 2, 3]);
+        assert_eq!(selected_indices(paths, &["empty"]).unwrap(), [6]);
+        for selected in [
+            vec![],
+            vec!["missing"],
+            vec!["data", "missing"],
+            vec!["../data"],
+            vec!["data/"],
+        ] {
+            assert_eq!(
+                selected_indices(paths, &selected).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+    }
+}
 
 #[cfg(unix)]
 mod disk {

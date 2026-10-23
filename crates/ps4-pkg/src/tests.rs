@@ -234,6 +234,85 @@ fn package(raw: Vec<u8>) -> Vec<u8> {
 }
 
 #[test]
+#[ignore = "regenerates the synthetic pkg-ops listing fixture"]
+fn write_listing_fixture() {
+    std::fs::write(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/ps4-nested.pkg"
+        ),
+        package(inner()),
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "regenerates the synthetic pkg-ops selection fixture"]
+fn write_selection_fixture() {
+    let mut b = vec![0; 14 * BLOCK as usize];
+    pfs_header(&mut b, false, 13);
+    for (n, directory, size, block) in [
+        (0, true, BLOCK, 2),
+        (1, true, BLOCK, 3),
+        (2, false, 6, 9),
+        (3, true, BLOCK, 4),
+        (4, true, BLOCK, 5),
+        (5, false, 3, 10),
+        (6, false, 6, 11),
+        (7, false, 4, 12),
+        (8, false, 0, 0),
+        (9, true, BLOCK, 6),
+        (10, true, BLOCK, 7),
+        (11, false, 5, 13),
+        (12, true, BLOCK, 8),
+    ] {
+        inode(&mut b, false, n, directory, size, block);
+    }
+    dir(&mut b, 2, &[("uroot", 1, 3)]);
+    dir(
+        &mut b,
+        3,
+        &[
+            ("README.txt", 2, 2),
+            ("data", 3, 3),
+            ("database", 10, 3),
+            ("empty", 12, 3),
+        ],
+    );
+    dir(
+        &mut b,
+        4,
+        &[("nested", 4, 3), ("one.bin", 5, 2), ("unused.bin", 6, 2)],
+    );
+    dir(
+        &mut b,
+        5,
+        &[("two.bin", 7, 2), ("zero.bin", 8, 2), ("empty", 9, 3)],
+    );
+    dir(&mut b, 6, &[(".", 9, 4), ("..", 4, 5)]);
+    dir(&mut b, 7, &[("other.bin", 11, 2)]);
+    dir(&mut b, 8, &[(".", 12, 4), ("..", 1, 5)]);
+    for (block, data) in [
+        (9, b"readme".as_slice()),
+        (10, b"one"),
+        (11, b"unused"),
+        (12, b"two!"),
+        (13, b"other"),
+    ] {
+        let start = block * BLOCK as usize;
+        b[start..start + data.len()].copy_from_slice(data);
+    }
+    std::fs::write(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/ps4-selection.pkg"
+        ),
+        package(b),
+    )
+    .unwrap();
+}
+
+#[test]
 fn nested_encrypted_streaming_and_seek() {
     let mut game = Package::open(Cursor::new(package(inner())))
         .unwrap()
@@ -556,5 +635,12 @@ fn extraction_no_overwrite_symlink_escape_or_invisible_failure() {
         Err(Error::IncompleteExtraction { .. })
     ));
     assert!(dest.join(".pkg-tools-incomplete").exists());
+    let dest = temp.join("broken-selected");
+    assert!(matches!(
+        broken.extract_selected_with_progress(&dest, &["eboot.bin"], || false, |_, _| {}),
+        Err(Error::IncompleteExtraction { .. })
+    ));
+    assert!(dest.join(".pkg-tools-incomplete").exists());
+    assert!(!dest.join("sce_sys").exists());
     std::fs::remove_dir_all(temp).unwrap();
 }

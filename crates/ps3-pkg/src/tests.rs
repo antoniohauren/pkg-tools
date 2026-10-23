@@ -2,6 +2,36 @@ use super::*;
 use std::io::Cursor;
 
 #[test]
+#[ignore = "regenerates the synthetic pkg-ops listing fixtures"]
+fn write_listing_fixtures() {
+    let entries: &[(&str, u32, &[u8])] = &[
+        ("README.txt", 3, b"readme"),
+        ("data/one.bin", 3, b"one"),
+        ("data/nested/two.bin", 3, b"two!"),
+        ("data/nested/zero.bin", 3, b""),
+        ("data/nested/empty", 4, b""),
+        ("data/unused.bin", 3, b"unused"),
+        ("database/other.bin", 3, b"other"),
+        ("empty", 4, b""),
+        ("data", 4, b""),
+        ("data/nested", 4, b""),
+        ("database", 4, b""),
+    ];
+    for (name, release, entries) in [
+        ("ps3-list-explicit.pkg", 0x8000, entries),
+        ("ps3-list-implied.pkg", 0, &entries[..8]),
+    ] {
+        std::fs::write(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures")
+                .join(name),
+            fixture(release, entries),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn liberation_publication_cancel_and_no_overwrite() {
     use std::{cell::Cell, fs};
     let root = std::env::temp_dir().join(format!("ps3-liberation-test-{}", std::process::id()));
@@ -498,6 +528,13 @@ fn safe_extraction_progress_cancellation_and_read_failure() {
         Err(Error::IncompleteExtraction { .. })
     ));
     assert!(out.join(pkg_fs::MARKER).exists());
+    let out = root.join("broken-selected");
+    assert!(matches!(
+        pkg.extract_selected_with_progress(&out, &["USRDIR/file"], || false, |_, _| {}),
+        Err(Error::IncompleteExtraction { .. })
+    ));
+    assert!(out.join(pkg_fs::MARKER).exists());
+    assert!(!out.join("empty").exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -571,4 +608,47 @@ fn sparse_package_and_entry_offsets_above_four_gib() {
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(data, tail_data);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_extraction_cancels_between_chunks() {
+    let root = std::env::temp_dir().join(format!("ps3-selected-chunks-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let out = root.join("output");
+    let data = vec![42; 131089];
+    let bytes = fixture(
+        0x8000,
+        &[("USRDIR/file", 9, &data), ("unselected", 3, b"skip")],
+    );
+    let mut pkg = Package::open(Cursor::new(bytes)).unwrap();
+    let cancelled = std::cell::Cell::new(false);
+    let mut updates = Vec::new();
+    let error = pkg
+        .extract_selected_with_progress(
+            &out,
+            &["USRDIR/file"],
+            || cancelled.get(),
+            |n, total| {
+                updates.push((n, total));
+                if n > 0 {
+                    cancelled.set(true);
+                }
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::IncompleteExtraction { source, .. } if matches!(*source, Error::Cancelled))
+    );
+    assert_eq!(
+        updates,
+        [(0, data.len() as u64), (65536, data.len() as u64)]
+    );
+    assert_eq!(
+        std::fs::metadata(out.join("USRDIR/file")).unwrap().len(),
+        65536
+    );
+    assert!(out.join(pkg_fs::MARKER).exists());
+    assert!(!out.join("unselected").exists());
+    std::fs::remove_dir_all(root).unwrap();
 }
