@@ -10,6 +10,12 @@ menu main_menu {
   }
   section {
     item {
+      label: "Use PS4 pic1.png";
+      action: "win.ps4-pic1";
+    }
+  }
+  section {
+    item {
       label: "About PKG Tools";
       action: "win.about";
     }
@@ -63,18 +69,18 @@ Adw.ApplicationWindow window {
                       Gtk.Label { label: "Summary"; xalign: 0; }
                     };
                   }
-                  Gtk.ListBoxRow send_nav {
-                    child: Gtk.Box {
-                      spacing: 12;
-                      Gtk.Image { icon-name: "network-transmit-symbolic"; }
-                      Gtk.Label { label: "Send to PS4"; xalign: 0; }
+                   Gtk.ListBoxRow explore_nav {
+                     child: Gtk.Box {
+                       spacing: 12;
+                       Gtk.Image { icon-name: "folder-open-symbolic"; }
+                       Gtk.Label { label: "Explore"; xalign: 0; }
                     };
                   }
-                  Gtk.ListBoxRow extract_nav {
+                   Gtk.ListBoxRow send_nav {
                     child: Gtk.Box {
                       spacing: 12;
-                      Gtk.Image { icon-name: "folder-download-symbolic"; }
-                      Gtk.Label { label: "Extract"; xalign: 0; }
+                       Gtk.Image { icon-name: "network-transmit-symbolic"; }
+                       Gtk.Label { label: "Send to PS4"; xalign: 0; }
                     };
                   }
                   Gtk.ListBoxRow convert_nav {
@@ -205,17 +211,40 @@ Adw.ApplicationWindow window {
                     }
                   };
                 }
-                Adw.StatusPage extract_page {
-                  icon-name: "folder-download-symbolic";
-                  title: "Extract Package";
-                  description: "Choose a parent folder. A new extraction folder is created and existing files are never replaced.";
-                  child: Gtk.Button extract {
-                    label: "Choose Destination…";
-                    halign: center;
-                    sensitive: false;
-                    styles ["pill", "suggested-action"]
-                  };
-                }
+                Gtk.Box explore_page {
+                  orientation: vertical;
+                  spacing: 12;
+                  margin-start: 18;
+                  margin-end: 18;
+                  margin-top: 18;
+                  margin-bottom: 18;
+                   Gtk.Stack explore_states {
+                    vexpand: true;
+                    Adw.StatusPage explore_status {
+                      icon-name: "folder-open-symbolic";
+                      title: "Package Files";
+                      description: "Open a package to browse its files.";
+                    }
+                    Gtk.ScrolledWindow explore_scroll {
+                      hscrollbar-policy: never;
+                      styles ["card"]
+                      child: Gtk.ListView explore_list {
+                        single-click-activate: false;
+                        accessibility { label: "Package files"; }
+                       };
+                     }
+                   }
+                   Gtk.Box {
+                     spacing: 12;
+                     homogeneous: true;
+                     Gtk.Button extract { label: "Extract All…"; sensitive: false; }
+                     Gtk.Button extract_selected {
+                       label: "Extract Selected…";
+                       sensitive: false;
+                       styles ["suggested-action"]
+                     }
+                   }
+                 }
                 Adw.StatusPage convert_page {
                   icon-name: "document-save-as-symbolic";
                   title: "Convert Package";

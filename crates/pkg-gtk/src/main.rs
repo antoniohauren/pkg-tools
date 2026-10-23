@@ -1,3 +1,4 @@
+mod explore;
 mod package;
 
 use adw::prelude::*;
@@ -19,6 +20,15 @@ struct Ui {
     welcome_open: gtk::Button,
     welcome: adw::StatusPage,
     extract: gtk::Button,
+    extract_selected: gtk::Button,
+    explore_states: gtk::Stack,
+    explore_status: adw::StatusPage,
+    explore_scroll: gtk::ScrolledWindow,
+    explore_list: gtk::ListView,
+    explore_selection: gtk::MultiSelection,
+    explore_requested: Cell<bool>,
+    package_generation: Cell<u64>,
+    listing_source: RefCell<Option<(u64, PathBuf)>>,
     convert: gio::SimpleAction,
     send_ps4: gio::SimpleAction,
     send_batch: gio::SimpleAction,
@@ -34,10 +44,11 @@ struct Ui {
     summary_page: gtk::ScrolledWindow,
     send_page: adw::StatusPage,
     send_address: gtk::Entry,
-    extract_page: adw::StatusPage,
+    explore_page: gtk::Box,
     convert_page: adw::StatusPage,
     info_page: gtk::ScrolledWindow,
     artwork: gtk::Image,
+    ps4_pic1: gio::SimpleAction,
     title_id: adw::ActionRow,
     version: adw::ActionRow,
     kind: adw::ActionRow,
@@ -64,12 +75,42 @@ struct Ui {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Extract,
+    ExtractSelected,
     Convert,
     Liberate,
 }
 
 impl Ui {
-    fn show_task(&self, index: i32) {
+    fn update_artwork(&self) {
+        self.artwork
+            .set_icon_name(Some("package-x-generic-symbolic"));
+        let details = self.details_data.borrow();
+        let Some(details) = details.as_ref() else {
+            return;
+        };
+        let prefer_pic1 = self
+            .ps4_pic1
+            .state()
+            .and_then(|v| v.get::<bool>())
+            .unwrap_or(false);
+        let pic1 = if prefer_pic1 {
+            details.pic1.as_deref()
+        } else {
+            None
+        };
+        for bytes in [pic1, details.icon.as_deref()].into_iter().flatten() {
+            if let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from(bytes)) {
+                self.artwork.set_paintable(Some(&texture));
+                return;
+            }
+        }
+        if pic1.is_some() || details.icon.is_some() {
+            self.toasts
+                .add_toast(adw::Toast::new("Game artwork could not be decoded."));
+        }
+    }
+
+    fn show_task(self: &Rc<Self>, index: i32) {
         if index == 0 && self.path.borrow().is_none() {
             self.pages.set_visible_child(&self.welcome);
             self.details.set_show_content(true);
@@ -77,14 +118,103 @@ impl Ui {
         }
         let page: &gtk::Widget = match index {
             0 => self.summary_page.upcast_ref(),
-            1 => self.send_page.upcast_ref(),
-            2 => self.extract_page.upcast_ref(),
+            1 => self.explore_page.upcast_ref(),
+            2 => self.send_page.upcast_ref(),
             3 => self.convert_page.upcast_ref(),
             _ => self.info_page.upcast_ref(),
         };
         self.task_pages.set_visible_child(page);
         self.pages.set_visible_child(&self.task_pages);
         self.details.set_show_content(true);
+        if index == 1 {
+            self.load_listing();
+        }
+    }
+
+    fn update_selected(&self) {
+        self.extract_selected.set_sensitive(
+            !self.busy.get()
+                && self.listing_is_current(self.package_generation.get())
+                && !self.explore_selection.selection().is_empty(),
+        );
+    }
+
+    fn listing_is_current(&self, generation: u64) -> bool {
+        generation == self.package_generation.get()
+            && self
+                .listing_source
+                .borrow()
+                .as_ref()
+                .is_some_and(|(loaded, path)| {
+                    *loaded == generation && self.path.borrow().as_ref() == Some(path)
+                })
+    }
+
+    fn reset_listing(&self) {
+        self.package_generation
+            .set(self.package_generation.get() + 1);
+        self.explore_requested.set(false);
+        self.listing_source.borrow_mut().take();
+        self.explore_selection.set_model(None::<&gio::ListModel>);
+        self.update_selected();
+        self.explore_states.set_visible_child(&self.explore_status);
+    }
+
+    fn load_listing(self: &Rc<Self>) {
+        let Some(path) = self.path.borrow().clone() else {
+            return;
+        };
+        if self.explore_requested.replace(true) {
+            return;
+        }
+        self.explore_status.set_title("Loading Package Files…");
+        self.explore_status
+            .set_description(Some("Reading directory metadata without extracting files."));
+        self.explore_status
+            .set_icon_name(Some("content-loading-symbolic"));
+        self.explore_states.set_visible_child(&self.explore_status);
+        let generation = self.package_generation.get();
+        let source = path.clone();
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                pkg_ops::list(&path)
+                    .map(explore::index)
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+            if generation != ui.package_generation.get()
+                || ui.path.borrow().as_ref() != Some(&source)
+            {
+                return;
+            }
+            match result {
+                Ok(Ok(entries)) if !entries.is_empty() => {
+                    *ui.listing_source.borrow_mut() = Some((generation, source));
+                    ui.explore_selection
+                        .set_model(Some(&explore::tree(entries)));
+                    ui.explore_states.set_visible_child(&ui.explore_scroll);
+                    ui.update_selected();
+                }
+                result => {
+                    let (title, description) = match result {
+                        Ok(Ok(_)) => (
+                            "No Application Files",
+                            "This package contains no application files.".to_owned(),
+                        ),
+                        Ok(Err(error)) => ("Could Not Browse Package", error),
+                        Err(_) => (
+                            "Could Not Browse Package",
+                            "The background worker stopped unexpectedly.".to_owned(),
+                        ),
+                    };
+                    ui.explore_status.set_title(title);
+                    ui.explore_status.set_description(Some(&description));
+                    ui.explore_status
+                        .set_icon_name(Some("dialog-information-symbolic"));
+                }
+            }
+        });
     }
 
     fn toggle_sidebar(&self) {
@@ -121,13 +251,14 @@ impl Ui {
         self.welcome_open.set_sensitive(!busy);
         self.extract
             .set_sensitive(!busy && self.path.borrow().is_some());
+        self.update_selected();
         self.convert
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
         self.send_ps4
             .set_enabled(!busy && self.path.borrow().is_some() && self.can_convert.get());
         self.send_batch.set_enabled(!busy);
         self.send_address.set_sensitive(!busy);
-        for index in [2, 3, 4] {
+        for index in [1, 3, 4] {
             self.navigation_list
                 .row_at_index(index)
                 .unwrap()
@@ -245,6 +376,7 @@ impl Ui {
             let result = gio::spawn_blocking(move || package::inspect(&input)).await;
             match result {
                 Ok(Ok(details)) => {
+                    ui.reset_listing();
                     ui.can_convert.set(details.can_convert);
                     *ui.details_data.borrow_mut() = Some(details.clone());
                     *ui.rap.borrow_mut() = None;
@@ -257,15 +389,7 @@ impl Ui {
                         .set_subtitle(&glib::markup_escape_text(&details.version));
                     ui.kind
                         .set_subtitle(&glib::markup_escape_text(&details.kind));
-                    ui.artwork.set_icon_name(Some("package-x-generic-symbolic"));
-                    if let Some(icon) = details.icon {
-                        match gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(icon)) {
-                            Ok(texture) => ui.artwork.set_paintable(Some(&texture)),
-                            Err(_) => ui
-                                .toasts
-                                .add_toast(adw::Toast::new("Game artwork could not be decoded.")),
-                        }
-                    }
+                    ui.update_artwork();
                     ui.source
                         .set_subtitle(&glib::markup_escape_text(&path.display().to_string()));
                     ui.size.set_subtitle(&format!(
@@ -516,6 +640,24 @@ impl Ui {
         if liberating && rap.is_none() {
             return;
         }
+        let generation = self.package_generation.get();
+        let selected = if operation == Operation::ExtractSelected {
+            let paths = explore::selected_paths(&self.explore_selection);
+            if paths.is_empty() {
+                return;
+            }
+            if self.path.borrow().as_ref() != Some(&source) || !self.listing_is_current(generation)
+            {
+                self.error(
+                    "Package Changed",
+                    "Select files from the current package before extracting.",
+                );
+                return;
+            }
+            Some(paths)
+        } else {
+            None
+        };
         self.busy(true, "Choose a destination…");
         let ui = self.clone();
         glib::spawn_future_local(async move {
@@ -665,6 +807,17 @@ impl Ui {
                 ui.error("Local Folder Required", "Choose a local destination.");
                 return;
             };
+            if selected.is_some()
+                && (!ui.listing_is_current(generation)
+                    || ui.path.borrow().as_ref() != Some(&source))
+            {
+                ui.busy(false, "");
+                ui.error(
+                    "Package Changed",
+                    "Select files from the current package before extracting.",
+                );
+                return;
+            }
             let destination = if saving_file {
                 parent
             } else if directory {
@@ -735,7 +888,13 @@ impl Ui {
                         } else { e.to_string() }
                     })
                 } else {
-                    pkg_ops::extract(&source, &output, &cancellation, progress).map_err(|e| {
+                    let result = if let Some(paths) = selected {
+                        let paths = paths.iter().map(String::as_str).collect::<Vec<_>>();
+                        pkg_ops::extract_selected(&source, &output, &paths, &cancellation, progress)
+                    } else {
+                        pkg_ops::extract(&source, &output, &cancellation, progress)
+                    };
+                    result.map_err(|e| {
                         if pkg_ops::was_cancelled(e.as_ref()) {
                             format!("{e}\n\nIf a partial output folder was created, remove it before retrying. Existing files were not replaced.")
                         } else {
@@ -968,6 +1127,10 @@ impl Ui {
 }
 
 fn build(app: &adw::Application) -> Rc<Ui> {
+    let preferences_path = glib::user_config_dir().join("pkg-tools/preferences.ini");
+    let preferences = glib::KeyFile::new();
+    let _ = preferences.load_from_file(&preferences_path, glib::KeyFileFlags::NONE);
+    let prefer_pic1 = preferences.boolean("Artwork", "ps4-pic1").unwrap_or(false);
     let builder = gtk::Builder::from_string(include_str!(concat!(env!("OUT_DIR"), "/window.ui")));
     let window: adw::ApplicationWindow = builder.object("window").unwrap();
     window.set_application(Some(app));
@@ -977,6 +1140,15 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         welcome_open: builder.object("welcome_open").unwrap(),
         welcome: builder.object("welcome").unwrap(),
         extract: builder.object("extract").unwrap(),
+        extract_selected: builder.object("extract_selected").unwrap(),
+        explore_states: builder.object("explore_states").unwrap(),
+        explore_status: builder.object("explore_status").unwrap(),
+        explore_scroll: builder.object("explore_scroll").unwrap(),
+        explore_list: builder.object("explore_list").unwrap(),
+        explore_selection: gtk::MultiSelection::new(None::<gio::ListModel>),
+        explore_requested: Cell::new(false),
+        package_generation: Cell::new(0),
+        listing_source: RefCell::new(None),
         convert: gio::SimpleAction::new("convert", None),
         send_ps4: gio::SimpleAction::new("send-ps4", None),
         send_batch: gio::SimpleAction::new("send-batch", None),
@@ -992,10 +1164,11 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         summary_page: builder.object("summary_page").unwrap(),
         send_page: builder.object("send_page").unwrap(),
         send_address: builder.object("send_address").unwrap(),
-        extract_page: builder.object("extract_page").unwrap(),
+        explore_page: builder.object("explore_page").unwrap(),
         convert_page: builder.object("convert_page").unwrap(),
         info_page: builder.object("info_page").unwrap(),
         artwork: builder.object("artwork").unwrap(),
+        ps4_pic1: gio::SimpleAction::new_stateful("ps4-pic1", None, &prefer_pic1.to_variant()),
         title_id: builder.object("title_id").unwrap(),
         version: builder.object("version").unwrap(),
         kind: builder.object("kind").unwrap(),
@@ -1018,6 +1191,18 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         can_convert: Cell::new(false),
         details_data: RefCell::new(None),
     });
+    ui.explore_list.set_factory(Some(&explore::factory()));
+    ui.explore_list.set_model(Some(&ui.explore_selection));
+    ui.explore_selection.connect_selection_changed(glib::clone!(
+        #[weak]
+        ui,
+        move |_, _, _| ui.update_selected()
+    ));
+    ui.extract_selected.connect_clicked(glib::clone!(
+        #[weak]
+        ui,
+        move |_| ui.choose_destination(Operation::ExtractSelected)
+    ));
     ui.welcome_open.connect_clicked(glib::clone!(
         #[weak]
         ui,
@@ -1126,6 +1311,42 @@ fn build(app: &adw::Application) -> Rc<Ui> {
         move |_, _| ui.choose_liberation()
     ));
     window.add_action(&ui.liberate);
+    ui.ps4_pic1.connect_activate(|action, _| {
+        let current = action.state().unwrap().get::<bool>().unwrap();
+        action.change_state(&(!current).to_variant());
+    });
+    ui.ps4_pic1.connect_change_state(glib::clone!(
+        #[weak]
+        ui,
+        move |action, value| {
+            let Some(value) = value.filter(|v| v.get::<bool>().is_some()) else {
+                return;
+            };
+            let enabled = value.get::<bool>().unwrap();
+            preferences.set_boolean("Artwork", "ps4-pic1", enabled);
+            let result = std::fs::create_dir_all(preferences_path.parent().unwrap())
+                .map_err(|e| e.to_string())
+                .and_then(|_| {
+                    gio::File::for_path(&preferences_path)
+                        .replace_contents(
+                            preferences.to_data().as_bytes(),
+                            None,
+                            false,
+                            gio::FileCreateFlags::PRIVATE,
+                            None::<&gio::Cancellable>,
+                        )
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                });
+            if let Err(error) = result {
+                ui.error("Could Not Save Preferences", &error);
+                return;
+            }
+            action.set_state(value);
+            ui.update_artwork();
+        }
+    ));
+    window.add_action(&ui.ps4_pic1);
     let about = gio::SimpleAction::new("about", None);
     about.connect_activate(glib::clone!(
         #[weak]
@@ -1232,6 +1453,55 @@ mod tests {
 
     #[test]
     #[ignore = "requires a graphical session"]
+    fn artwork_preference_and_decode_fallback() {
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.pkg_tools.ArtworkTest")
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ui = build(&app);
+        let png = |width| {
+            gtk::gdk::MemoryTexture::new(
+                width,
+                1,
+                gtk::gdk::MemoryFormat::R8g8b8a8,
+                &glib::Bytes::from_owned(vec![255u8; width as usize * 4]),
+                width as usize * 4,
+            )
+            .save_to_png_bytes()
+            .to_vec()
+        };
+        *ui.details_data.borrow_mut() = Some(package::Details {
+            can_convert: true,
+            title: String::new(),
+            size: 0,
+            content_id: String::new(),
+            status: String::new(),
+            metadata: String::new(),
+            title_id: String::new(),
+            version: String::new(),
+            kind: String::new(),
+            category: String::new(),
+            icon: Some(png(1)),
+            pic1: Some(png(2)),
+        });
+        ui.ps4_pic1.set_state(&false.to_variant());
+        ui.update_artwork();
+        assert_eq!(ui.artwork.paintable().unwrap().intrinsic_width(), 1);
+        ui.ps4_pic1.set_state(&true.to_variant());
+        ui.update_artwork();
+        assert_eq!(ui.artwork.paintable().unwrap().intrinsic_width(), 2);
+        ui.details_data.borrow_mut().as_mut().unwrap().pic1 = Some(b"broken PNG".to_vec());
+        ui.update_artwork();
+        assert_eq!(ui.artwork.paintable().unwrap().intrinsic_width(), 1);
+        ui.details_data.borrow_mut().as_mut().unwrap().pic1 = None;
+        ui.update_artwork();
+        assert_eq!(ui.artwork.paintable().unwrap().intrinsic_width(), 1);
+        ui.window.upgrade().unwrap().close();
+    }
+
+    #[test]
+    #[ignore = "requires a graphical session"]
     fn blueprint_window_and_package_loading() {
         adw::init().unwrap();
         let app = adw::Application::builder()
@@ -1253,7 +1523,7 @@ mod tests {
         assert!(ui.send_batch.is_enabled());
         assert!(ui.send_address.is_sensitive());
         ui.navigation_list
-            .select_row(ui.navigation_list.row_at_index(1).as_ref());
+            .select_row(ui.navigation_list.row_at_index(2).as_ref());
         assert_eq!(
             ui.pages.visible_child(),
             Some(ui.task_pages.clone().upcast())
@@ -1271,9 +1541,12 @@ mod tests {
         assert_eq!(ui.pages.visible_child(), Some(ui.welcome.clone().upcast()));
         assert!(!ui.link_rap.is_enabled());
         assert!(ui.liberate.is_enabled());
+        assert!(!ui.extract_selected.is_sensitive());
+        ui.extract_selected.emit_clicked();
+        assert!(!ui.busy.get());
         assert_eq!(
             ui.task_pages.visible_child(),
-            Some(ui.summary_page.clone().upcast())
+            Some(ui.send_page.clone().upcast())
         );
         ui.liberate.activate(None);
         let context = glib::MainContext::default();
@@ -1440,6 +1713,314 @@ mod tests {
             ui.pages.visible_child(),
             Some(ui.task_pages.clone().upcast())
         );
+        ui.window.upgrade().unwrap().close();
+    }
+
+    #[test]
+    #[ignore = "requires a graphical session and GDK_DEBUG=no-portals"]
+    // GtkFileDialog's in-process fallback exposes the deprecated chooser API.
+    #[allow(deprecated)]
+    fn explore_tree_selection_and_package_changes() {
+        #[track_caller]
+        fn wait_until(context: &glib::MainContext, ready: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !ready() {
+                assert!(Instant::now() < deadline, "Explore workflow timed out");
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn picker(context: &glib::MainContext) -> gtk::FileChooserDialog {
+            let find = || {
+                gtk::Window::list_toplevels()
+                    .into_iter()
+                    .find_map(|widget| {
+                        widget
+                            .downcast::<gtk::FileChooserDialog>()
+                            .ok()
+                            .filter(|dialog| dialog.is_visible())
+                    })
+            };
+            wait_until(context, || find().is_some());
+            let dialog = find().unwrap();
+            wait_until(context, || dialog.is_mapped());
+            dialog
+        }
+
+        fn accept_folder(context: &glib::MainContext, folder: &std::path::Path) {
+            let dialog = picker(context);
+            dialog
+                .set_current_folder(Some(&gio::File::for_path(folder)))
+                .unwrap();
+            wait_until(context, || {
+                dialog.current_folder().and_then(|f| f.path()).as_deref() == Some(folder)
+            });
+            // GTK populates the chooser asynchronously after current_folder changes.
+            context.block_on(glib::timeout_future(Duration::from_millis(100)));
+            dialog.response(gtk::ResponseType::Accept);
+        }
+
+        fn output_paths(root: &std::path::Path) -> Vec<PathBuf> {
+            fn walk(root: &std::path::Path, dir: &std::path::Path, paths: &mut Vec<PathBuf>) {
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    paths.push(path.strip_prefix(root).unwrap().to_owned());
+                    if path.is_dir() {
+                        walk(root, &path, paths);
+                    }
+                }
+            }
+            let mut paths = Vec::new();
+            walk(root, root, &mut paths);
+            paths.sort();
+            paths
+        }
+
+        glib::set_application_name("Explore Test");
+        glib::set_prgname(Some("pkg-tools"));
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.pkg_tools.ExploreTest")
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ui = build(&app);
+        let context = glib::MainContext::default();
+        let explore_nav = ui.navigation_list.row_at_index(1).unwrap();
+        let label = explore_nav
+            .child()
+            .unwrap()
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap();
+        assert_eq!(label.text(), "Explore");
+        assert!(!explore_nav.is_sensitive());
+        assert!(!ui.extract_selected.is_sensitive());
+        ui.extract_selected.emit_clicked();
+        assert!(!ui.busy.get());
+        for fixture in [
+            "ps3-list-explicit.pkg",
+            "ps3-list-implied.pkg",
+            "ps4-selection.pkg",
+        ] {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures")
+                .join(fixture);
+            let original = std::fs::read(&path).unwrap();
+            if fixture == "ps4-selection.pkg" {
+                // This listing fixture has synthetic, non-SFO container metadata.
+                ui.reset_listing();
+                *ui.path.borrow_mut() = Some(path.clone());
+                ui.navigation_list
+                    .select_row(ui.navigation_list.row_at_index(0).as_ref());
+            } else {
+                ui.load(gio::File::for_path(&path));
+            }
+            wait_until(&context, || !ui.busy.get());
+            assert!(ui.explore_selection.model().is_none());
+            assert!(ui.listing_source.borrow().is_none());
+            assert!(!ui.extract_selected.is_sensitive());
+            ui.navigation_list.select_row(Some(&explore_nav));
+            assert_eq!(
+                ui.task_pages.visible_child(),
+                Some(ui.explore_page.clone().upcast())
+            );
+            wait_until(&context, || ui.explore_selection.model().is_some());
+            assert_eq!(
+                ui.explore_states.visible_child(),
+                Some(ui.explore_scroll.clone().upcast())
+            );
+            let tree = ui
+                .explore_selection
+                .model()
+                .unwrap()
+                .downcast::<gtk::TreeListModel>()
+                .unwrap();
+            let root_count = tree.n_items();
+            let mut index = 0;
+            while index < tree.n_items() {
+                tree.row(index).unwrap().set_expanded(true);
+                index += 1;
+            }
+            assert!(tree.n_items() > root_count);
+            for path in ["data/nested/two.bin", "empty", "data/nested/zero.bin"] {
+                let index = (0..tree.n_items())
+                    .find(|&index| {
+                        let object = tree
+                            .row(index)
+                            .unwrap()
+                            .item()
+                            .unwrap()
+                            .downcast::<glib::BoxedAnyObject>()
+                            .unwrap();
+                        object.borrow::<pkg_ops::FileEntry>().path == path
+                    })
+                    .unwrap();
+                ui.explore_selection.select_item(index, true);
+                assert!(ui.extract_selected.is_sensitive());
+                assert_eq!(explore::selected_paths(&ui.explore_selection), [path]);
+                ui.busy(true, "Testing selection guard…");
+                assert!(!ui.extract_selected.is_sensitive());
+                ui.busy(false, "");
+                assert!(ui.extract_selected.is_sensitive());
+                ui.explore_selection.unselect_all();
+                assert!(!ui.extract_selected.is_sensitive());
+            }
+            ui.explore_selection.select_item(0, false);
+            ui.explore_selection.select_item(1, false);
+            assert_eq!(explore::selected_paths(&ui.explore_selection).len(), 2);
+            let generation = ui.package_generation.get();
+            assert!(ui.listing_is_current(generation));
+            let source = ui.path.borrow().clone();
+            *ui.path.borrow_mut() = Some(PathBuf::from("/different-package.pkg"));
+            ui.update_selected();
+            assert!(!ui.listing_is_current(generation));
+            assert!(!ui.extract_selected.is_sensitive());
+            *ui.path.borrow_mut() = source;
+            ui.update_selected();
+            assert!(ui.extract_selected.is_sensitive());
+            ui.show_task(0);
+            ui.show_task(1);
+            assert_eq!(ui.explore_selection.model(), Some(tree.upcast()));
+            assert_eq!(explore::selected_paths(&ui.explore_selection).len(), 2);
+            // Reloading the same path must invalidate a destination-picker snapshot too.
+            ui.reset_listing();
+            assert!(!ui.listing_is_current(generation));
+            assert!(explore::selected_paths(&ui.explore_selection).is_empty());
+            assert!(!ui.extract_selected.is_sensitive());
+            ui.load_listing();
+            assert!(!ui.busy.get());
+            assert!(ui.explore_selection.model().is_none());
+            assert_eq!(ui.explore_status.title(), "Loading Package Files…");
+            wait_until(&context, || ui.explore_selection.model().is_some());
+            assert!(!ui.listing_is_current(generation));
+            assert!(ui.listing_is_current(ui.package_generation.get()));
+            assert!(explore::selected_paths(&ui.explore_selection).is_empty());
+
+            // Exercise the real button callbacks, picker, worker and result dialogs.
+            let parent = std::env::temp_dir()
+                .join(format!("pkg-gtk-explore-{}-{fixture}", std::process::id()));
+            std::fs::create_dir(&parent).unwrap();
+            let model = ui
+                .explore_selection
+                .model()
+                .unwrap()
+                .downcast::<gtk::TreeListModel>()
+                .unwrap();
+            let mut index = 0;
+            while index < model.n_items() {
+                model.row(index).unwrap().set_expanded(true);
+                index += 1;
+            }
+            let index = (0..model.n_items())
+                .find(|&i| {
+                    model
+                        .row(i)
+                        .unwrap()
+                        .item()
+                        .unwrap()
+                        .downcast::<glib::BoxedAnyObject>()
+                        .unwrap()
+                        .borrow::<pkg_ops::FileEntry>()
+                        .path
+                        == "data/nested/two.bin"
+                })
+                .unwrap();
+            ui.explore_selection.select_item(index, true);
+            ui.extract_selected.emit_clicked();
+            assert!(ui.busy.get());
+            assert!(!ui.extract.is_sensitive());
+            picker(&context).response(gtk::ResponseType::Cancel);
+            wait_until(&context, || !ui.busy.get());
+            assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+            assert!(ui.extract_selected.is_sensitive());
+            for selected in [true, false] {
+                let folder = parent.join(if selected { "selected" } else { "all" });
+                std::fs::create_dir(&folder).unwrap();
+                if selected {
+                    ui.extract_selected.emit_clicked();
+                    // The picker must retain its original selection snapshot.
+                    ui.explore_selection.unselect_all();
+                } else {
+                    ui.extract.emit_clicked();
+                }
+                accept_folder(&context, &folder);
+                wait_until(&context, || !ui.busy.get());
+                wait_until(&context, || {
+                    ui.window.upgrade().unwrap().visible_dialog().is_some()
+                });
+                let dialog = ui
+                    .window
+                    .upgrade()
+                    .unwrap()
+                    .visible_dialog()
+                    .unwrap()
+                    .downcast::<adw::AlertDialog>()
+                    .unwrap();
+                assert_eq!(dialog.heading().as_deref(), Some("Extraction Complete"));
+                dialog.emit_by_name::<()>("response", &[&"close"]);
+                dialog.force_close();
+                let output = package::destination(&path, &folder, "-extracted");
+                let mut expected: Vec<PathBuf> = if selected {
+                    ["data", "data/nested", "data/nested/two.bin"]
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect()
+                } else {
+                    pkg_ops::list(&path)
+                        .unwrap()
+                        .into_iter()
+                        .map(|entry| PathBuf::from(entry.path))
+                        .collect()
+                };
+                expected.sort();
+                assert_eq!(output_paths(&output), expected);
+                assert_eq!(
+                    std::fs::read(output.join("data/nested/two.bin")).unwrap(),
+                    b"two!"
+                );
+                assert!(!output.join(".pkg-tools-incomplete").exists());
+            }
+            ui.explore_selection.select_item(index, true);
+            ui.extract_selected.emit_clicked();
+            picker(&context);
+            ui.reset_listing();
+            accept_folder(&context, &parent);
+            wait_until(&context, || !ui.busy.get());
+            wait_until(&context, || {
+                ui.window.upgrade().unwrap().visible_dialog().is_some()
+            });
+            let dialog = ui
+                .window
+                .upgrade()
+                .unwrap()
+                .visible_dialog()
+                .unwrap()
+                .downcast::<adw::AlertDialog>()
+                .unwrap();
+            assert_eq!(dialog.heading().as_deref(), Some("Package Changed"));
+            dialog.force_close();
+            assert!(!package::destination(&path, &parent, "-extracted").exists());
+            assert!(ui.explore_selection.model().is_none());
+            assert!(ui.listing_source.borrow().is_none());
+            assert!(explore::selected_paths(&ui.explore_selection).is_empty());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            std::fs::remove_dir_all(parent).unwrap();
+            // Leave live listing/selection state for the next package load to clear.
+            ui.load_listing();
+            wait_until(&context, || ui.explore_selection.model().is_some());
+            ui.explore_selection.select_item(0, true);
+            assert!(ui.extract_selected.is_sensitive());
+        }
+        *ui.path.borrow_mut() = Some(PathBuf::from("/dev/null"));
+        ui.reset_listing();
+        ui.show_task(1);
+        wait_until(&context, || {
+            ui.explore_status.title() != "Loading Package Files…"
+        });
+        assert_eq!(ui.explore_status.title(), "Could Not Browse Package");
+        assert!(!ui.extract_selected.is_sensitive());
         ui.busy(true, "Extracting package…");
         ui.show_extraction();
         assert!(!ui.extraction_dialog.can_close());

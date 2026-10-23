@@ -18,6 +18,7 @@ pub struct Details {
     pub kind: String,
     pub category: String,
     pub icon: Option<Vec<u8>>,
+    pub pic1: Option<Vec<u8>>,
 }
 
 fn category(value: &[u8]) -> String {
@@ -74,6 +75,7 @@ pub fn inspect(path: &Path) -> Result<Details, String> {
         kind: "Unknown".into(),
         category: "gd".into(),
         icon: None,
+        pic1: None,
         metadata: format!(
             "Format: PS4 PKG\nFlags: {:#x}\nDRM type: {:#x}\nContent type: {:#x}\nContent flags: {:#x}\nContainer entries: {}\nEntry table offset: {}\nBody offset: {}\nBody size: {}\nPFS flags: {:#x}\nPFS offset: {}\nPFS size: {}\n",
             h.flags,
@@ -116,6 +118,16 @@ pub fn inspect(path: &Path) -> Result<Details, String> {
         Ok(None) => details.metadata.push_str("\nArtwork: not available\n"),
         Err(e) => {
             writeln!(details.metadata, "\nArtwork: {e}").unwrap();
+        }
+    }
+    match pkg.read_pic1() {
+        Ok(Some(bytes)) if valid_icon(&bytes) => details.pic1 = Some(bytes),
+        Ok(Some(_)) => details
+            .metadata
+            .push_str("\npic1.png: invalid PNG or dimensions exceed 2048 × 2048\n"),
+        Ok(None) => {}
+        Err(e) => {
+            writeln!(details.metadata, "\npic1.png: {e}").unwrap();
         }
     }
     details
@@ -183,6 +195,7 @@ fn inspect_ps3(reader: BufReader<File>, path: &Path) -> Result<Details, String> 
         kind: "Unknown".into(),
         category: String::new(),
         icon: None,
+        pic1: None,
         metadata: format!(
             "Source: {}\nFormat: PS3 PKG\nPackage size: {} bytes\nRelease type: {:#x}\nPlatform: {}\nPackage entries: {}\nMetadata offset: {}\nMetadata count: {}\nMetadata size: {}\nData offset: {}\nData size: {}\nSignatures: unverified\n",
             path.display(),
@@ -269,6 +282,9 @@ mod tests {
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
         png.extend_from_slice(&512u32.to_be_bytes());
         png.extend_from_slice(&512u32.to_be_bytes());
+        assert!(valid_icon(&png));
+        png[16..20].copy_from_slice(&1920u32.to_be_bytes());
+        png[20..24].copy_from_slice(&1080u32.to_be_bytes());
         assert!(valid_icon(&png));
         png[16..20].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(!valid_icon(&png));
