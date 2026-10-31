@@ -1,4 +1,8 @@
-//! Checked, byte-preserving PARAM.SFO parsing. No text decoding is forced.
+//! Checked PARAM.SFO parsing and semantic SFO 1.1 serialization.
+//! Values and capacity padding are preserved; no text decoding is forced.
+
+mod serialize;
+pub use serialize::serialize;
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -45,7 +49,8 @@ pub struct Entry<'a> {
     pub key: &'a [u8],
     pub format: u16,
     pub value: Value<'a>,
-    /// Exact used bytes, including text terminators.
+    /// Exact used bytes, including text terminators. Serialization uses these
+    /// bytes and rejects a `value` or `format` that disagrees with them.
     pub raw: &'a [u8],
     pub max_len: u32,
     pub padding: &'a [u8],
@@ -77,6 +82,26 @@ fn u32le(data: &[u8], offset: u64) -> Result<u32, Error> {
     Ok(u32::from_le_bytes(
         bytes(data, offset, 4)?.try_into().unwrap(),
     ))
+}
+
+fn value_from_raw(format: u16, raw: &[u8]) -> Result<Value<'_>, Error> {
+    Ok(match format {
+        0x0004 => Value::Binary(raw),
+        0x0204 => {
+            let end = raw
+                .iter()
+                .position(|b| *b == 0)
+                .ok_or(Error::Malformed("unterminated text"))?;
+            Value::Text(&raw[..end])
+        }
+        0x0404 => {
+            if raw.len() != 4 {
+                return Err(Error::Malformed("integer is not 4 bytes"));
+            }
+            Value::Integer(u32le(raw, 0)?)
+        }
+        _ => Value::Unknown { format, bytes: raw },
+    })
 }
 
 /// Parse SFO 1.0 or 1.1, borrowing values and padding from `data`.
@@ -152,23 +177,7 @@ pub fn parse(data: &[u8]) -> Result<Sfo<'_>, Error> {
             ranges.insert(offset, end);
         }
         let (raw, padding) = capacity.split_at(len as usize);
-        let value = match format {
-            0x0004 => Value::Binary(raw),
-            0x0204 => {
-                let end = raw
-                    .iter()
-                    .position(|b| *b == 0)
-                    .ok_or(Error::Malformed("unterminated text"))?;
-                Value::Text(&raw[..end])
-            }
-            0x0404 => {
-                if len != 4 {
-                    return Err(Error::Malformed("integer is not 4 bytes"));
-                }
-                Value::Integer(u32le(raw, 0)?)
-            }
-            _ => Value::Unknown { format, bytes: raw },
-        };
+        let value = value_from_raw(format, raw)?;
         entries.push(Entry {
             key,
             format,

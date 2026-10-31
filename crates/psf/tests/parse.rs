@@ -160,3 +160,57 @@ fn deterministic_mutations_never_panic() {
         }
     }
 }
+
+#[test]
+fn serialize_reparse_preserves_semantics_not_layout() {
+    let mut source = fixture(); // Deliberately unaligned data table and values.
+    source.extend_from_slice(b"unretained trailing bytes");
+    let parsed = parse(&source).unwrap();
+    let output = psf::serialize(&parsed).unwrap();
+    assert_ne!(output, source);
+    let reparsed = parse(&output).unwrap();
+    assert_eq!(reparsed.version, parsed.version);
+    assert_eq!(reparsed.entries.len(), parsed.entries.len());
+    for (before, after) in parsed.entries.iter().zip(&reparsed.entries) {
+        assert_eq!(before.key, after.key);
+        assert_eq!(before.format, after.format);
+        assert_eq!(before.value, after.value);
+        assert_eq!(before.raw, after.raw);
+        assert_eq!(before.max_len, after.max_len);
+        assert_eq!(before.padding, after.padding);
+    }
+    assert_eq!(psf::serialize(&reparsed).unwrap(), output);
+    assert_eq!(
+        u32::from_le_bytes(output[12..16].try_into().unwrap()) % 4,
+        0
+    );
+    for i in 0..parsed.entries.len() {
+        let offset = 32 + i * 16;
+        assert_eq!(
+            u32::from_le_bytes(output[offset..offset + 4].try_into().unwrap()) % 4,
+            0
+        );
+    }
+}
+
+#[test]
+fn parsed_mutations_serialize_without_panics() {
+    let original = fixture();
+    for i in 0..original.len() {
+        for byte in [0, 0x7f, 0xff] {
+            let mut data = original.clone();
+            data[i] = byte;
+            if let Ok(sfo) = parse(&data) {
+                if sfo.version != 0x101 {
+                    assert_eq!(
+                        psf::serialize(&sfo),
+                        Err(Error::UnsupportedVersion(sfo.version))
+                    );
+                    continue;
+                }
+                let output = psf::serialize(&sfo).unwrap();
+                assert!(parse(&output).is_ok());
+            }
+        }
+    }
+}
