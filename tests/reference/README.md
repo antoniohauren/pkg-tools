@@ -1,5 +1,211 @@
 # Independent inspection oracle
 
+## Native source-backed base rebuild acceptance
+
+### Additional newcrypt and retained-resource profile
+
+After preparing the legacy synthetic source below, `check-rebuild-profile.py`
+(Python `cryptography`/OpenSSL required) independently builds a **synthetic-only**
+nonzero-seed newcrypt source, with paired encrypted NP records, padded 0x403
+storage, trophy00 and all additional supported resources. No real NP/trophy
+identity is generated. It authenticates all referenced outer blocks, rekeys
+bottom-up, re-encrypts metadata against final offsets, and finalizes all hashes.
+It also exercises version-0x3000 PlayGo header/SDK preservation. This source uses
+the verified canonical general-digest recipe; it does **not** exercise unverified
+modern System/PlayGo/Trophy or alternate MajorParam/Content recipes. A private
+source requiring those recipes was safely rejected before scratch/publication.
+
+```sh
+python3 tests/reference/check-rebuild-profile.py prepare \
+  /tmp/opencode/native-rebuild-new-setup/fixture/synthetic.pkg \
+  /tmp/opencode/newcrypt-resource-source.pkg
+target/debug/pkg-tools fpkg rebuild /tmp/opencode/newcrypt-resource-source.pkg \
+  /tmp/opencode/newcrypt-native-output.pkg
+python3 tests/reference/check-rebuild-profile.py verify \
+  /tmp/opencode/newcrypt-resource-source.pkg /tmp/opencode/newcrypt-native-output.pkg
+PKG_TOOLS_REBUILD_REFERENCE=/tmp/opencode/newcrypt-resource-source.pkg \
+  cargo test -p ps4-pkg --test rebuild -- --include-ignored
+```
+
+Use new paths; no existing file is replaced. Acceptance checks every stored
+container/PlayGo/general digest, exact retained licenses/NP/SFO/trophy/resources,
+legacy destination flags, and every outer plaintext block HMAC including indirect
+and inode blocks. Run the prepared pinned `reader/Extraction.dll` on source and
+native output too; compare complete inner/resource manifests, excluding only
+regenerated PlayGo. That independent reader omits NP records; the separate
+Python CBC/padded-NP comparison covers them. No console, save or trophy-runtime
+validation follows. The small synthetic HMAC walker supports one inode block and
+single indirection only; do not use it as a private/large-package checker.
+
+`check-native-rebuild.py` separates fixture preparation from acceptance of an
+**actual native writer output**. It does not substitute reference generation for
+native-writer evidence. Only its original bounded synthetic content ID is accepted;
+do not supply games, private fixture packages or arbitrary external application trees.
+
+```sh
+python3 tests/reference/check-native-rebuild.py self-test
+python3 tests/reference/check-native-rebuild.py prepare /path/to/dotnet-sdk/dotnet \
+  /path/to/clean/pinned-LibOrbisPkg /tmp/opencode/native-rebuild-new-setup \
+  target/debug/pkg-tools
+```
+
+Requires clean LibOrbisPkg `643477263b2644e0803e0f58b8726ea4e3f3b7d4`,
+.NET SDK 8.0.425 and built native CLI. Preparation creates a private 0700 root,
+`fixture/synthetic.pkg`, independent `source-readback.json`, and `source-tree/`.
+The adapter's explicit **synthetic-only** zero-passcode mode permits source-backed
+testing without saving/logging real passcodes or adding crypto constants. Default
+`check-authoring.py` behavior still uses disposable random passcodes. Reference
+checkout stays untouched; adapted PFSC source and reference binaries remain local.
+
+Run the native source-backed writer separately using that source package/tree.
+Once it produces a new package, supply its path directly (no inferred CLI command
+or automatic writer fallback):
+
+```sh
+python3 tests/reference/check-native-rebuild.py verify /path/to/dotnet-sdk/dotnet \
+  /tmp/opencode/native-rebuild-new-setup "$NATIVE_OUTPUT" \
+  /tmp/opencode/native-rebuild-new-acceptance target/debug/pkg-tools \
+  --inner-size 0x550000
+```
+
+Both output roots must be new. `--inner-size` is the native clear inner-image
+logical length, not encrypted outer/PFSC/package length; `0x550000` matches this
+fixture's minimum inner image. Change it only if the writer intentionally chooses
+a different layout. Source package itself (including hard-link aliases) is refused
+as native output; caller must still establish writer provenance, since copying a
+reference package to another path cannot prove native emission.
+
+Acceptance requires:
+
+* Independent Python layout, every stored-entry/header/body/PFS/table/SC digest,
+  exact default PlayGo DAT, manifest XML semantics, supported general digests, and
+  every package-relative 64-KiB PlayGo SHA slot. Synthetic packages capped at 16 MiB.
+* Every validation emitted by pinned `PkgValidator` returns **Ok**; **NoKey fails**,
+  including fake-header equality and debug RIF signature checks. Results saved to
+  `validation.json`; this is legacy fake-header validation, not Sony signing.
+* Pinned reader independently decrypts/traverses source and native output. Exact
+  namespace and complete size/SHA256 comparison covers every retained payload and
+  extracted application resource, **including SFO and keystone**. Only the three
+  regenerated PlayGo files may differ from source; their native bytes must pass
+  the semantic/hash checks above. Native extraction then matches every independent
+  native-output file/resource byte, including all three PlayGo files.
+* Five disposable-copy corruptions fail their intended Python checks. Additional
+  fake-header-signature corruption must pass keyless checks but fail exactly the
+  pinned header-signature validation. Originals and existing outputs are preserved.
+
+`evidence.json` records pins, adapter hashes, counts and explicit limits, never keys
+or source-package fingerprints. Reference builder/validator/reader share lineage;
+Python keyless/PlayGo checks do not. Embedded PFS reader authenticates its header,
+**not every block HMAC**; separate outer-image oracle below does not automatically
+establish all-block authentication for this rebuilt package. No >4-GiB, install,
+launch, firmware/GoldHEN, NP/trophy identity, save or update compatibility follows.
+
+Executed 2026-10-31: comparison self-tests and six existing verifier regression
+tests passed; preparation at `/tmp/opencode/native-rebuild-acceptance-2` passed
+**27/27 pinned validations**, 219 Python layout/hash checks plus DAT/XML/general
+checks, and all **8 files / 3 directories** matched native extraction. Explicit
+validator mode also passed on the first prepared source. The second setup verified
+the known synthetic passcode by pinned readback, and all six disposable-copy
+corruption checks passed as harness regression against its reference source.
+Native-output verification
+remains pending until a writer output is supplied; preparation is not native
+full-package acceptance. Upstream builds emitted ten known obsolete-API/lowercase
+warnings per adapter, no errors.
+
+### Runnable fixture gate
+
+**The prepared `eboot.bin` is a non-executable sentinel. It CANNOT launch and its
+package must never be called PS4-ready.** No runnable fixture/toolchain was found
+in the limited local search of `/usr/local`, accessible `/opt`, and project paths;
+`/opt/containerd` was inaccessible. Ignored `pkgs/` was not inspected.
+
+Official open-source starting point, inspected 2026-10-31:
+[OpenOrbis toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain) documents
+`samples/hello_world`, clang/lld, toolchain libraries/stubs, `create-fself`, and
+`OO_PS4_TOOLCHAIN`. Source checkout alone lacks built toolchain libraries/binaries;
+the official README recommends release/toolchain setup. No release binary, game
+or arbitrary executable was downloaded, and no toolchain was installed. User must
+choose/build a permitted runnable source package separately, preserve its license
+and identity, then explicitly perform console install/launch/save tests. This
+synthetic-only harness is deliberately not an arbitrary homebrew acceptance tool.
+
+## Keyless container generation
+
+`ps4-pkg` integration tests exercise default PlayGo DAT/XML and keyless digest
+generation without a package writer. Export only original opaque synthetic bytes
+(not a valid PKG) for independent Python/stdlib checks; use a fresh nonexistent path:
+
+```sh
+PKG_TOOLS_KEYLESS_SYNTHETIC_OUTPUT=/tmp/opencode/native-keyless-container.bin \
+  cargo test -p ps4-pkg --test container keyless_synthetic_finalization
+python3 tests/reference/check-container.py /tmp/opencode/native-keyless-container.bin --inner-size 0x50000
+```
+
+The Python checker independently validates exact default 416-byte DAT, manifest
+semantics, supported general-digest flags/slots/SFO text serialization, plus existing
+layout, stored-entry, body/table/SC, header, PFS and every PlayGo SHA-slot check.
+Input capped at 16 MiB. Synthetic test buffers are not native streaming behavior.
+
+The existing ignored `pinned_reference_container_layout` test now also compares
+DAT/general/SHA records and all supported hash values against pinned-L output:
+
+```sh
+PKG_TOOLS_CONTAINER_REFERENCE=/path/to/synthetic/fixture/synthetic.pkg \
+  cargo test -p ps4-pkg --test container pinned_reference_container_layout -- --ignored
+```
+
+Executed 2026-10-31: Rust comparison against existing
+`base-container-oracle-check-2` synthetic fixture passed; Python reported 219
+layout/hash checks plus DAT/XML/general checks on that reference (inner size
+`0x550000`), and 134 plus DAT/XML/general checks on native opaque bytes (inner
+`0x50000`). Native tests also check short reads/EOF, cancellation during a block,
+wrong lengths, write failures, malformed SFO/identity, optional ATTRIBUTE2, padding
+coverage, SC truncation and final header dependencies.
+No new reference package build or console/graphical/private-fixture test performed.
+No keys, signatures, licenses, metadata encryption, publication or installability
+are supplied/established by this check. No new crypto dependency or numeric key.
+
+## Synthetic container crypto vectors
+
+`container::encrypt_metadata` and `public_rsa_wrap` are low-level, bounded legacy
+FPKG encoders, not a package writer or authentic signing API. New synthetic tests
+use an original disposable RSA pair's public half, never package wrapping constants.
+No private half is stored. Export requires a new path (no overwrite):
+
+```sh
+PKG_TOOLS_CONTAINER_CRYPTO_OUTPUT=/tmp/opencode/container-crypto-new.bin \
+  cargo test -p ps4-pkg independent_padding_public_wrapping_and_metadata_vectors
+python3 tests/reference/check-container-crypto.py /tmp/opencode/container-crypto-new.bin
+```
+
+Python independently computes exact padding/public exponentiation with its own
+built-in MT19937, hashlib and integer pow, and all four metadata CBC vectors with
+OpenSSL-backed cryptography. Cases distinguish D[2]/D[3], changed final offsets and
+flags, IV/key halves and zero-padding/declared lengths. Rust also checks malformed
+keys/record lengths, unsupported IDs/indices/algorithm and actual planned record
+sizes. No streaming/I/O API introduced; synthetic export uses create-new.
+
+For pinned L comparison, reuse clean reference pin and the external
+`PFSCReader.net8.cs` adaptation from the authoring harness (paths below illustrative):
+
+```sh
+/path/to/dotnet-sdk/dotnet build tests/reference/Authoring.csproj \
+  -p:ReferenceRoot=/path/to/clean/pinned-LibOrbisPkg \
+  -p:ReferencePfsc=/path/to/existing-oracle/reader/PFSCReader.net8.cs \
+  -p:BaseIntermediateOutputPath=/tmp/opencode/container-crypto-obj-new/ \
+  -o /tmp/opencode/container-crypto-oracle-new
+/path/to/dotnet-sdk/dotnet /tmp/opencode/container-crypto-oracle-new/Authoring.dll \
+  --crypto /tmp/opencode/container-crypto-new.bin
+```
+
+Executed 2026-10-31: Rust, Python and pinned L exact comparisons passed. External
+.NET SDK 8.0.425 needed (`/usr/bin/dotnet` here has runtime only); upstream generated
+10 known obsolete-API/lowercase-name warnings, no errors. No new package build,
+private/game input, secret signing, graphical/reference-extraction rebuild or
+console/emulator check. Full ENTRY_KEYS/license/fake-header integration remains
+separate. Legacy deterministic type-2 padding leaks equality; RSA timing advisory
+does not approve private signing. No dependencies/features/lockfile changed.
+
 ## Native signed/encrypted outer-PFS oracle
 
 Uses original public synthetic image key/content-ID/passcode recipes, no game
@@ -160,9 +366,16 @@ Evidence is deliberately split:
   lineage, so they are not a second independent format implementation.
 * Python independently checks header/body/PFS first-block/full-image SHA256, digest
   table/self slot, every stored entry hash, both SC aggregate hashes, sorted unique
-  IDs, GD base flags and physical size. Maximum accepted package is 16 MiB, with
-  64 KiB hashing/copy buffers. Flipping final PFS byte in a new disposable copy must
-  cause full-image digest failure. No corruption touches original fixture.
+  IDs, GD base flags and physical size. It also checks the bounded layout and
+  package-relative PlayGo digests detailed below. Maximum accepted package is
+  16 MiB, with 64 KiB hashing/copy buffers. Five disposable-copy mutations must
+  fail their intended checks: header, body padding, first PFS block, final PFS byte,
+  and table reserved bytes. No corruption touches the original fixture.
+* Native `container::BaseContainerLayout` plans the generated reference image and
+  resource sizes, then its entire serialized entry table, names, body/PFS boundary
+  and package size must match the reference bytes. The harness runs the opt-in
+  `pinned_reference_container_layout` Rust integration test automatically. This
+  checks planning against independent output, not native package emission.
 * `expected.json`: source path/size/hash expectations plus enumerated generated
   paths and SFO edits. C# checks unchanged SFO fields/types/capacities, allowing only
   PUBTOOLINFO/PUBTOOLVER changes. Python compares source payloads except edited SFO;
@@ -184,6 +397,68 @@ gate remain open. No flatz reader run or hardware check is implied.
 
 Required crypto inputs and unresolved distribution blockers:
 [authoring provenance review](../../docs/fpkg-authoring-provenance.md).
+
+### Base container acceptance checks (2026-10-31)
+
+These are the **pinned L GD builder profile**, not general PS4 validity rules or
+native-writer acceptance. Python reads serialized bytes without importing Rust
+layout code. Source evidence at the pin above:
+
+* `PKG/PkgWriter.cs:28-115`: big-endian header field locations.
+* `PKG/PkgBuilder.cs:246-266,345-465`: body starts at `0x2000`, mirrored entry
+  counts, **SC count 6**, generated records/flags/key indices, physical system
+  allocation order `10,20,80,100,1,200` (hex), ID-sorted table, 16-byte entry
+  alignment and `0x80000` body/PFS alignment. The verifier does not hardcode
+  `0x2a80`: METAS must describe the actual table location and `count*32` length.
+* `PKG/Entry.cs` (`MetaEntry.Write`, `NameTableEntry`): six BE32 fields followed
+  by eight zero bytes; name offsets reference ASCII NUL-terminated name starts,
+  including the initial empty name.
+* `PKG/PkgBuilder.cs:151-203`: stored-byte entry digests indexed by sorted table
+  position, zero DIGESTS self slot, whole padded-body hash, whole digest-table
+  hash; SC1 concatenates ENTRY_KEYS/IMAGE_KEY/GENERAL_DIGESTS/full METAS/DIGESTS,
+  while SC2 omits DIGESTS and includes **only `sc_entry_count*32` METAS bytes**.
+  PlayGo SHA uses the first four SHA256 bytes of each stored 64 KiB PFS block,
+  indexed by **package-relative** block number, with zero pre-PFS slots.
+
+Before hashing, Python checks all ranges against actual bounded file size, count
+limits, record padding, unique sorted IDs and required system/license/reserved/
+SFO/PlayGo records. Entries must lie inside body, be aligned and nonoverlapping;
+first six physically allocated records must have the order above. Fixed generated
+sizes/flags/key indices, SC1 length, name boundaries/terminators and PlayGo length
+are checked. Body end must equal PFS start, PFS must contain whole 64 KiB blocks
+and end at EOF, and promote/mount/package sizes must agree. Table self-location is
+validated, not treated as a separate overlapping allocation. No contiguity or
+name-sorted allocation requirement is invented for later optional resources.
+
+`check-authoring.py --self-test` runs six `test-authoring.py` tests (including
+mutation subtests) using only Python stdlib.
+Its original 1 MiB **opaque/keyless** fixture has no valid license, SFO or PFS;
+it tests the verifier, not package installability. Structural mutation subtests
+cover huge/truncated ranges, count mismatch, missing/duplicate IDs, physical
+ordering, table identity, overlap/alignment, flags, name boundaries and padding.
+Targeted digest mutations repair enclosing body/header hashes where needed so
+entry/table/self-slot/SC failures cannot be masked by an earlier checksum failure.
+PlayGo tests repair all other keyless hashes, then reject stale PFS block slots
+and nonzero pre-PFS slots. This small test fixture construction is not an
+independent writer proof; the external pinned builder run is the format evidence.
+
+Executed full oracle again on 2026-10-31, Linux/.NET SDK 8.0.425: all 27 upstream
+validations Ok; strengthened Python acceptance and five external-copy corruption
+checks pass; 8 files / 3 directories match native extraction; GP4 round trips pass.
+Only existing upstream obsolete-API/lowercase-type warnings occurred. Local run
+root: `/tmp/opencode/base-container-oracle-check-2` (private generated artifacts).
+The native layout comparison also passed against this generated fixture. To rerun
+that check alone, set `PKG_TOOLS_CONTAINER_REFERENCE` to its `fixture/synthetic.pkg`
+and run `cargo test -p ps4-pkg --test container -- --ignored`.
+
+Still not verified here: fake-header RSA construction or metadata decryption by
+an independent crypto implementation, general-digest semantic inputs, debug-RIF
+or keystone encoder provenance/known answers, native full-PKG emission, NP/trophy,
+updates/remarry, >4 GiB or actual console install/launch/save compatibility. The
+separate outer-image oracle above covers synthetic all-block HMAC/XTS; this
+keyless container verifier does **not** authenticate/decrypt its embedded PFS.
+Crypto distribution approval remains unresolved. No new crypto constants or
+dependencies are added; no external reference sources are modified.
 
 ### Base GP4 interchange evidence
 

@@ -11,12 +11,16 @@ import secrets
 import shutil
 import struct
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 HERE = pathlib.Path(__file__).resolve().parent
 PIN = "643477263b2644e0803e0f58b8726ea4e3f3b7d4"
 SDK = "8.0.425"
 MAX_SIZE = 16 * 1024 * 1024
+BLOCK = 0x10000
+SYSTEM_ORDER = (0x10, 0x20, 0x80, 0x100, 1, 0x200)
+REQUIRED = (*SYSTEM_ORDER, 0x400, 0x401, 0x409, 0x1000, 0x1001, 0x1002, 0x1003)
 
 
 def digest(stream, offset, size):
@@ -43,6 +47,7 @@ def integrity(path):
             raise ValueError("wrong magic")
         u32 = lambda offset: struct.unpack_from(">I", header, offset)[0]
         u64 = lambda offset: struct.unpack_from(">Q", header, offset)[0]
+        u16 = lambda offset: struct.unpack_from(">H", header, offset)[0]
 
         def check(name, actual, expected):
             if actual != expected:
@@ -50,8 +55,11 @@ def integrity(path):
             checks.append(name)
 
         def region(offset, length):
-            if offset < 0 or length < 0 or offset + length > size:
+            if offset < 0 or length < 0 or offset > size or length > size - offset:
                 raise ValueError("out-of-range region")
+
+        def require(name, condition):
+            check(name, bool(condition), True)
 
         def hashed(name, offset, length, expected):
             region(offset, length)
@@ -60,21 +68,69 @@ def integrity(path):
         check("package size", u64(0x430), size)
         check("GD base type", u32(0x74), 0x1A)
         check("base flags", u32(0x78), 0x0A000000)
-        hashed("header", 0, 0xFE0, header[0xFE0:0x1000])
-        hashed("body", u64(0x20), u64(0x28), header[0x160:0x180])
-        hashed("PFS first block", u64(0x410), 65536, header[0x460:0x480])
-        hashed("PFS image", u64(0x410), u64(0x418), header[0x440:0x460])
+        body, body_size = u64(0x20), u64(0x28)
+        pfs, pfs_size = u64(0x410), u64(0x418)
+        region(body, body_size)
+        region(pfs, pfs_size)
+        check("body start", body, 0x2000)
+        check("body/PFS boundary", body + body_size, pfs)
+        check("PFS alignment", pfs % 0x80000, 0)
+        require("PFS block length", pfs_size >= BLOCK and pfs_size % BLOCK == 0)
+        check("PFS end", pfs + pfs_size, size)
+        check("promote size", u32(0x7C), pfs)
+        check("mount image size", u64(0x428), size)
         count, table = u32(0x10), u32(0x18)
         if not 1 <= count <= 64:
             raise ValueError("unexpected synthetic entry count")
+        check("mirrored entry count", u16(0x16), count)
+        check("SC entry count", u16(0x14), 6)
         region(table, count * 32)
         source.seek(table)
-        records = [struct.unpack(">6I8x", source.read(32)) for _ in range(count)]
+        raw_records = [source.read(32) for _ in range(count)]
+        require("record reserved bytes", all(r[24:] == bytes(8) for r in raw_records))
+        records = [struct.unpack(">6I8x", r) for r in raw_records]
         ids = [r[0] for r in records]
         check("unique sorted entry IDs", ids, sorted(set(ids)))
+        require("required base entries", set(REQUIRED) <= set(ids))
         entries = {r[0]: (r[4], r[5]) for r in records}
         for offset, length in entries.values():
             region(offset, length)
+            require("entry in body", body <= offset and offset + length <= pfs)
+            check("entry alignment", offset % 16, 0)
+        allocated = sorted(records, key=lambda r: r[4])
+        check("physical system order", [r[0] for r in allocated[:6]], list(SYSTEM_ORDER))
+        check("first entry at body start", allocated[0][4], body)
+        for previous, current in zip(allocated, allocated[1:]):
+            require("nonoverlapping entries", previous[4] + previous[5] <= current[4])
+        check("METAS table location/length", entries[0x100], (table, count * 32))
+        for entry_id, length in [(0x10, 0x800), (0x20, 0x100), (0x80, 0x180),
+                                 (0x400, 0x400), (0x401, 0x200), (0x409, 0x2000)]:
+            check(f"entry {entry_id:x} length", entries[entry_id][1], length)
+        flags = {1: (0x40000000, 0), 0x10: (0x60000000, 0),
+                 0x20: (0xE0000000, 0x3000), 0x80: (0x60000000, 0),
+                 0x100: (0x60000000, 0), 0x200: (0x40000000, 0),
+                  0x400: (0x80000000, 0x3000), 0x401: (0x80000000, 0x2000),
+                  0x402: (0x80000000, 0x3000), 0x403: (0x80000000, 0x3000)}
+        for record in records:
+            check(f"entry {record[0]:x} flags", record[2:4], flags.get(record[0], (0, 0)))
+        check("SC1 length", u32(0x1C), sum(entries[i][1] for i in SYSTEM_ORDER[:5]))
+        check("PlayGo digest length", entries[0x1002][1], size // BLOCK * 4)
+        names_offset, names_size = entries[0x200]
+        source.seek(names_offset)
+        names = source.read(names_size)
+        require("initial empty entry name", names[:1] == b"\0")
+        for record in records:
+            name_offset = record[1]
+            require("entry name boundary", name_offset < len(names) and
+                    (name_offset == 0 or names[name_offset - 1] == 0))
+            end = names.find(b"\0", name_offset)
+            require("terminated ASCII entry name", end >= 0 and
+                    all(byte < 128 for byte in names[name_offset:end]))
+
+        hashed("header", 0, 0xFE0, header[0xFE0:0x1000])
+        hashed("body", body, body_size, header[0x160:0x180])
+        hashed("PFS first block", pfs, BLOCK, header[0x460:0x480])
+        hashed("PFS image", pfs, pfs_size, header[0x440:0x460])
         offset, length = entries[1]
         check("digest table length", length, count * 32)
         source.seek(offset)
@@ -82,7 +138,8 @@ def integrity(path):
         check("digest self slot", hashes[:32], bytes(32))
         hashed("digest table", offset, length, header[0x140:0x160])
         for index, record in enumerate(records[1:], 1):
-            hashed(f"entry {record[0]:x}", record[4], record[5], hashes[index * 32:(index + 1) * 32])
+            stored = (record[5] + 15) // 16 * 16 if record[0] == 0x403 else record[5]
+            hashed(f"entry {record[0]:x}", record[4], stored, hashes[index * 32:(index + 1) * 32])
         for name, entry_ids, expected in [
             ("SC1", [0x10, 0x20, 0x80, 0x100, 1], header[0x100:0x120]),
             ("SC2", [0x10, 0x20, 0x80, 0x100], header[0x120:0x140]),
@@ -91,11 +148,18 @@ def integrity(path):
             for entry_id in entry_ids:
                 start, length = entries[entry_id]
                 if name == "SC2" and entry_id == 0x100:
-                    length = struct.unpack_from(">H", header, 0x14)[0] * 32
+                    length = u16(0x14) * 32
                 region(start, length)
                 source.seek(start)
                 aggregate.update(source.read(length))
             check(name, aggregate.digest(), expected)
+        offset, length = entries[0x1002]
+        source.seek(offset)
+        playgo = source.read(length)
+        check("PlayGo pre-PFS slots", playgo[:pfs // BLOCK * 4], bytes(pfs // BLOCK * 4))
+        for block in range(pfs // BLOCK, size // BLOCK):
+            check("PlayGo PFS block", playgo[block * 4:block * 4 + 4],
+                  digest(source, block * BLOCK, BLOCK)[:4])
     return checks
 
 
@@ -109,6 +173,36 @@ def self_test():
     else:
         raise AssertionError("truncation accepted")
     print("Digest streaming/truncation self-test passed")
+    subprocess.run([sys.executable, str(HERE / "test-authoring.py")], check=True)
+
+
+def corruption_checks(package, corrupted):
+    """Only called on this harness's generated synthetic fixture; preserve original."""
+    with package.open("rb") as source:
+        header = source.read(0x1000)
+    pfs = struct.unpack_from(">Q", header, 0x410)[0]
+    table = struct.unpack_from(">I", header, 0x18)[0]
+    cases = [("header", 0x80), ("body", pfs - 1),
+             ("PFS first block", pfs), ("PFS image", package.stat().st_size - 1),
+             ("record reserved bytes", table + 24)]
+    for expected, offset in cases:
+        with package.open("rb") as src, corrupted.open("xb") as dst:
+            shutil.copyfileobj(src, dst, BLOCK)
+        try:
+            with corrupted.open("r+b") as dst:
+                dst.seek(offset)
+                byte = dst.read(1)
+                dst.seek(offset)
+                dst.write(bytes([byte[0] ^ 1]))
+            try:
+                integrity(corrupted)
+            except ValueError as error:
+                assert str(error) == "integrity mismatch: " + expected, str(error)
+            else:
+                raise AssertionError("corruption not detected: " + expected)
+        finally:
+            corrupted.unlink()
+    return [name for name, _ in cases]
 
 
 def run(dotnet, reference, output, cli):
@@ -127,21 +221,14 @@ def run(dotnet, reference, output, cli):
     subprocess.run([dotnet, str(output / "builder/Authoring.dll"), str(output / "fixture")], check=True)
     package = output / "fixture/synthetic.pkg"
     checks = integrity(package)
-    # Corrupt only a disposable copy; demonstrate actual hash failure, not open success.
-    corrupted = output / "corrupt.pkg"
-    with package.open("rb") as src, corrupted.open("xb") as dst:
-        shutil.copyfileobj(src, dst, 65536)
-    with corrupted.open("r+b") as dst:
-        dst.seek(-1, 2)
-        byte = dst.read(1)
-        dst.seek(-1, 2)
-        dst.write(bytes([byte[0] ^ 1]))
-    try:
-        integrity(corrupted)
-    except ValueError as error:
-        assert str(error) == "integrity mismatch: PFS image", str(error)
-    else:
-        raise AssertionError("PFS corruption not detected")
+    # This bounded fixture uses L's minimum 0x55-block clear inner image.
+    subprocess.run([sys.executable, str(HERE / "check-container.py"), str(package),
+                    "--inner-size", "0x550000"], check=True)
+    subprocess.run(["cargo", "test", "-p", "ps4-pkg", "--test", "container",
+                    "pinned_reference_container_layout", "--", "--ignored"],
+                   cwd=HERE.parent.parent,
+                   env={**os.environ, "PKG_TOOLS_CONTAINER_REFERENCE": str(package)}, check=True)
+    corruptions = corruption_checks(package, output / "corrupt.pkg")
     manifest = output / "readback.json"
     with manifest.open("x") as result:
         subprocess.run([dotnet, str(output / "reader/Extraction.dll"), str(package)], stdout=result, check=True)
@@ -186,10 +273,10 @@ def run(dotnet, reference, output, cli):
     subprocess.run(["cargo", "test", "-p", "ps4-pkg", "--test", "gp4", "pinned_reference_roundtrip", "--", "--ignored"],
                    cwd=HERE.parent.parent, env={**os.environ, "PKG_TOOLS_GP4_REFERENCE_DIR": str(output)}, check=True)
     (output / "evidence.json").write_text(json.dumps({
-        "reference": PIN, "sdk": SDK, "keyless_checks": checks, "corruption_detected": "PFS image",
+        "reference": PIN, "sdk": SDK, "keyless_checks": checks, "corruption_detected": corruptions,
         "gp4": "native generation -> pinned reference load/tree/write -> native parse/preflight/settings/mappings equality",
         "adapter_sha256": {name: hashlib.sha256((HERE / name).read_bytes()).hexdigest()
-                           for name in ["Authoring.cs", "Authoring.csproj", "Extraction.cs", "build-extraction.py", "check-authoring.py"]},
+                            for name in ["Authoring.cs", "Authoring.csproj", "Extraction.cs", "build-extraction.py", "check-authoring.py", "test-authoring.py"]},
         "adapted_pfsc_sha256": hashlib.sha256((output / "reader/PFSCReader.net8.cs").read_bytes()).hexdigest(),
         "limits": ["SFO byte comparison excluded: reference changes PUBTOOL fields",
                    "builder and C# reader share lineage", "no all-block PFS HMAC validator", "not runnable"],
