@@ -1,5 +1,44 @@
 # Compatibility targets and format research
 
+Authoring stage 1: [native FPKG authoring contract](fpkg-authoring-contract.md).
+Narrow standalone-app GP4 generation/import/export is implemented with pinned
+synthetic load/tree/write/native-reparse evidence; no native PKG writer. Base
+writer profile is source-investigated; a bounded synthetic base build/read
+oracle and keyless integrity/corruption checks are now executed (see
+[reference checks](../tests/reference/README.md)). Full PFS authentication,
+[crypto provenance](fpkg-authoring-provenance.md), exact full-update binding and
+console validation remain blockers. No native PKG writer or console support claim.
+Read-only `gp4 preflight` now inventories approved source sizes/resources and
+reports input/global build blockers. This is not package construction or a
+rebuild-readiness guarantee; existing extraction support remains unchanged.
+Package-source `fpkg preflight` additionally retains original header/general-digest,
+NP and valid-length keystone bytes through the library (never CLI logs), classifies
+container records and refuses unsupported encrypted retained records. Synthetic
+tests only for this milestone; no new independent authoring/hardware evidence.
+
+Native image-layer follow-up: clear D32 PFS/raw-block PFSC generation is now
+implemented with deterministic checked allocation, collision lookup and bounded
+streaming/publication. Pinned LibOrbisPkg reads both native synthetic images
+(9,002 files / 3 directories); separate Python validates layout, lookup, padding,
+payload and corruption. **Intermediate images only, not installable PKGs**; no
+crypto gate is waived. [Exact profile/limits](fpkg-authoring-contract.md#native-clear-inner-image-writer-2026-10-31).
+
+GP4 source-pipeline follow-up: Unix `gp4 image` / `authoring::PreparedProject`
+generate those intermediates from approved GP4 sources, preserve original keystone,
+separate five supported container resources and reject all other system resources.
+No-follow input opens, SHA-256/stability checks and prepublication revalidation are
+implemented. Pinned independent reads match both synthetic outputs (5 inner files /
+4 directories); no PKG, NP/trophy, save, artwork-format or hardware claim follows.
+
+Outer-image follow-up: native signed S32/encrypted outer PFS now wraps that raw
+PFSC, using explicit ready key or validated legacy content-ID/passcode derivation.
+Library-only GP4 integration retains source revalidation/no-overwrite. Pinned L
+reads single/double-indirect native synthetic outputs; separate Python/OpenSSL
+checks all referenced plaintext HMACs, XTS, allocation, PFSC and payload corruption.
+Standards and public synthetic crypto known answers pass. No new fixed keys or
+provenance clearance; no licenses/PlayGo/container/full-PKG/hardware claim.
+[Exact limits/vectors](fpkg-authoring-contract.md#native-signedencrypted-outer-image-2026-10-31).
+
 Milestone 4 update: [native writer and executed reader checks](zarchive.md).
 Milestone 6 update: [implemented PS3 subset and verification](ps3.md). One retail
 fixture matches an independent source-derived Python/OpenSSL oracle; debug has

@@ -21,6 +21,10 @@ Package extraction and executable decryption are distinct operations. ZAR conver
 
 ## Post-MVP backlog
 
+Detailed implementation order for **FPKG creation, GP4, update remarry and later
+base/update merging**: [FPKG authoring plan](docs/fpkg-authoring.md). These are
+planned features, not current capabilities; remarry precedes standalone merging.
+
 These are future candidates, not requirements for completing the current MVP.
 Package-authoring work should start with PKG creation and GP4 support, followed
 by SFO editing. Each feature needs its own format investigation and reference

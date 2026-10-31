@@ -22,7 +22,7 @@ cargo run --release -p pkg-cli -- liberate GAME.pkg LICENSE.rap Game-rapless.pkg
 `inspect` and `extract` accept PS3 and PS4 packages. Inputs are detected by magic,
 not filename. Rust 1.89 or newer is required;
 current checks used Rust 1.99 on Linux. `psf` is standard-library-only; `ps4-pkg`
-uses pure-Rust crypto/compression and safe Unix filesystem calls through `rustix`.
+uses pure-Rust crypto/compression/XML and safe Unix filesystem calls through `rustix`.
 The CLI uses `serde_json`. [Dependency decisions](docs/dependencies-and-fixtures.md).
 
 **Experimental PS3 RAP-less conversion:** `liberate` converts supported local-license
@@ -44,6 +44,91 @@ No extracted temporary tree is needed; source PKGs remain untouched. Existing
 outputs are rejected. Both payloads are prepared before publication, but two-file
 publication is not atomic: if update finalization fails, the completed base stays
 and the error reports its location. See [conversion checks](docs/zarchive.md#pkg-conversion).
+
+## Base GP4 projects
+
+```sh
+cargo run -p pkg-cli -- gp4 create GAME_DIR game.gp4 \
+  --passcode-file /private/passcode.txt --timestamp '2026-10-31 12:00:00'
+cargo run -p pkg-cli -- gp4 preflight game.gp4 --source-root GAME_DIR
+cargo run -p pkg-cli -- fpkg preflight INPUT.pkg
+cargo run -p pkg-cli -- gp4 image game.gp4 inner.pfsc --source-root GAME_DIR
+```
+
+Generates a narrow standalone-app GP4, **not a PKG**. Identity and versions come
+from `sce_sys/param.sfo` (`CATEGORY=gd`); `eboot.bin` is required. Output must be
+outside the source tree and must not exist. Passcode file must be outside that
+tree: exactly 32 printable ASCII bytes, optionally followed by one LF. GP4 itself
+contains the passcode; keep it private (native Unix output is mode 0600).
+Timestamp is explicit UTC, not local time. Sources stay unchanged; generated
+references are relative to the GP4 directory, never runtime CWD.
+
+Library API: `ps4_pkg::gp4::Project::{from_directory, parse, preflight, to_xml,
+write_new}`. Preflight explicitly approves one source root and inventories every
+absolute/external reference. Updates/remaster/delta, custom PlayGo and unknown
+build settings are rejected. [Exact subset and safety limits](docs/fpkg-authoring-contract.md#4-initial-gp4-subset).
+Pinned synthetic GP4 load/tree/write/native-reparse checks pass; no package-build
+or console compatibility follows. No GP4 GTK actions or native PS4 PKG writer.
+
+`gp4 preflight` is a read-only authoring inventory, **not a build**. It reports
+approved source references, sizes, resource roles and input/global build blockers;
+exit success means inventory completed, not that a package can be built. Missing
+or wrong-size keystones, NP/trophy resources, supplied PlayGo and unclassified
+`sce_sys` files remain explicit blockers. Keystone size is not authentication.
+Library API: `ps4_pkg::authoring::preflight(project, root, cancelled)`; cancellation
+is checked before GP4 approval and between inventory entries. No payload hashing,
+source snapshot, scratch, metadata edits or output publication occurs. Passcodes
+and fingerprints are not printed; source paths/identity are local diagnostics.
+Native PKG writing remains gated by [crypto provenance](docs/fpkg-authoring-provenance.md)
+and independent integrity/crypto evidence. No `build-fpkg` command is implemented.
+
+`fpkg preflight` inventories a supported fake GD package without changing normal
+extraction. Library `authoring::preflight_package(package, cancelled)` retains the
+complete original header, bounded general-digest/NP records and a supplied 96-byte
+keystone; lists every container record with its authoring role; and reports unknown
+records and unsupported resources as blockers. `Package::read_authoring_record`
+provides capped reads, supporting only existing DK3 metadata decryption (key index
+3). Other encrypted indices/algorithms fail explicitly, never use a substitute key.
+CLI withholds header/digest/NP/keystone bytes and fingerprints. This is metadata
+inventory, not SFO/header identity validation, full integrity checking, a stable
+source snapshot or rebuild approval. Cancellation surrounds existing noninterruptible
+tree preparation and is checked between entries/read chunks. No package is written.
+
+**Native intermediate image writer:** `ps4_pkg::inner_image::InnerImage` plans and
+streams clear D32 PFS images and raw-block PFSC wrappers, including lookup/hash
+collisions and empty directories. `write_new` publishes only `.pfs`/`.pfsc` without
+replacement; these are **not PKGs**. Callers explicitly supply validated image
+entries and stable bounded payload reads, not arbitrary GP4 resources. No GP4-to-PKG
+build command exists. [Image contract and executed checks](docs/fpkg-authoring-contract.md#native-clear-inner-image-writer-2026-10-31).
+
+**GP4-to-image pipeline (Unix):** `gp4 image` now connects approved standalone-app
+sources to that writer. Requires supplied original 96-byte `sce_sys/keystone`;
+never generates a replacement or authenticates save identity. Preserves application
+bytes and all declared directories. Places `param.sfo`, `icon0.png`, `pic0.png`,
+`pic1.png` and `snd0.at9` outside the inner namespace as planned container resources;
+**these resources are not emitted in the image**. Other `sce_sys` files, including
+NP/trophy and supplied PlayGo, fail explicitly. No artwork/executable validation.
+Library `authoring::PreparedProject::{new, resources, copy_resource, write_inner_new}`
+retains checked placements and streams original resources for later container work.
+
+Uses no-follow descriptor-relative input opens, private SHA-256/stability metadata,
+bounded payload reads and full-source revalidation before no-overwrite publication.
+Only `.pfs`/`.pfsc`, outside approved root; existing parents/hard links required.
+Reports exact image scratch bytes before writing. Preparation and writing scan
+sources multiple times; keep sources/output parents stable (not an immutable snapshot
+or hostile-mutation sandbox). Cancellation is library-driven, not an interactive CLI
+control. [Exact pipeline, limits and independent synthetic evidence](docs/fpkg-authoring-contract.md#native-gp4-source-to-inner-image-pipeline-2026-10-31).
+
+**Signed/encrypted outer image (library only):** `outer_image::OuterImage` wraps
+an `InnerImage` in signed S32 PFS with raw PFSC, plaintext block HMACs and AES-XTS.
+`authoring::PreparedProject::write_outer_new(path, image_key, cancelled)` connects
+the same approved/stability-checked GP4 sources. Requires explicit ready 32-byte
+image key (`outer_image::legacy_image_key(content_id, passcode)` derives one);
+only `.pfs`, never `.pkg`. No new fixed crypto keys or production dependencies.
+Single/double-indirect synthetic images pass external LibOrbisPkg and Python/OpenSSL
+all-reference integrity/payload checks. Container resources remain excluded;
+licensing/PlayGo/container emission and full crypto provenance remain blocked.
+[Contract and vectors](docs/fpkg-authoring-contract.md#native-signedencrypted-outer-image-2026-10-31).
 
 ## GNOME application
 
@@ -215,6 +300,10 @@ glibc. Cross-distribution compatibility must be checked separately.
 - `psf::parse(&bytes)` reads SFO 1.0/1.1, retaining typed values, unknown formats,
   original bytes and capacity padding. Keys and text remain byte slices;
   callers choose whether to decode UTF-8. Integers preserve all 32 bits.
+  `psf::serialize(&sfo)` emits checked SFO 1.1, preserving entry order, raw values,
+  formats, capacities and padding. Typed values must agree with raw bytes; original
+  offsets, layout gaps and trailing bytes are not preserved. No metadata is edited
+  automatically. Serialization uses the same resource limits as parsing.
 - `ps4_pkg::Package::open(reader)` accepts `Read + Seek`, exposes `header()` and
   container `entries()`, and reads plaintext bytes with `read_param_sfo()`.
    Parse those bytes with `psf::parse`. Container entries are not PFS files.

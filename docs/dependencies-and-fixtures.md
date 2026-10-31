@@ -7,6 +7,53 @@ dependencies below; the later candidate table retains historical research.
 
 ## Trophy reader
 
+Outer-PFS follow-up (2026-10-31): no dependency/lockfile/fixed-key changes. Native
+writer reuses existing HMAC/SHA256/AES-XTS with explicit ready image key; legacy
+content-ID/passcode derivation adds no fixed secret. Known answers: RFC 4231 case 1,
+NIST SP 800-38A F.2.2 and original public synthetic derivation/XTS/padded-block
+vectors checked with Python hashlib/hmac, OpenSSL-backed cryptography and pinned
+LibOrbisPkg. External checks cover every emitted signed-block dependency and
+single/double-indirect payloads, not full packages/hardware. Python cryptography
+is test-only; no runtime/native dependency. Additional authoring-input provenance
+gate remains. [Exact vectors/profile](fpkg-authoring-contract.md#native-signedencrypted-outer-image-2026-10-31).
+
+GP4 image-pipeline follow-up (2026-10-31): reuses `pkg-fs`'s existing Unix `rustix`
+for descriptor-relative no-follow reads and existing `sha2` for private stability
+hashes. No manifest/lockfile/dependency/key changes. Optional `check-gp4-image.py`
+generates original synthetic GP4 sources (including opaque, non-authenticated
+keystone/artwork sentinels); checks both native images through pinned L's external
+reader. Five inner files / four directories match; five container resources are
+excluded. Inputs remain unchanged, existing images remain untouched. Synthetic
+keystone is not generated valid binding material or approved for actual packages.
+No new crypto-input provenance, console or large-file gate is promoted.
+
+Native inner-image follow-up (2026-10-31): standard library plus existing `pkg-fs`
+component policy only; no dependency, key material or Cargo resolution changes.
+Native clear D32/raw-PFSC images pass the pinned external LibOrbisPkg reader and
+separate keyless Python allocation/lookup/payload/corruption checks (9,002 files /
+3 directories). Generated data is original non-executable synthetic content.
+Reference binaries remain external; no PKG/authentication/console claim. See
+[image contract](fpkg-authoring-contract.md#native-clear-inner-image-writer-2026-10-31).
+
+Package authoring inventory follow-up (2026-10-31): no dependency or numeric crypto
+input added. Reuses existing DK3 recovery and bounded CBC/CFB metadata reader.
+Synthetic coverage includes NP/header/general-digest retention outside extraction,
+unknown-record blockers, original keystone preservation/size refusal, explicit
+encrypted key-index/algorithm refusal, record allocation limits, cancellation and
+read-only CLI output. Independent package-source comparison is not yet executed;
+existing reference extraction evidence does not validate native authoring.
+
+Authoring-readiness follow-up (2026-10-31): `ps4_pkg::authoring` uses only existing
+GP4 approval and standard-library metadata I/O; no dependency/constants added.
+Synthetic tests exercise resource classification, keystone refusal, cancellation,
+source-root approval, unchanged inputs and truthful CLI build-blocker reporting.
+No private fixture, generated package or crypto-input provenance gate is promoted.
+
+Base GP4 follow-up (2026-10-31): `ps4-pkg` reuses the same locked `roxmltree`
+0.21.1/default features and local `psf` crate. No new external crate versions or
+native dependency. GP4 additionally caps XML bytes, parser nodes and hierarchy
+depth, forbids DTDs and allowlists its schema; this is not a new parser audit.
+
 `pkg-ops` reuses the locked `aes` 0.9.3 and `cbc` 0.2.1 primitives for PS4
 ESFM resources, and adds `roxmltree` **0.21.1** for XML rather than an ad-hoc
 parser. It is pure Rust, MIT OR Apache-2.0, MSRV 1.60; its only dependency,
@@ -208,6 +255,13 @@ practical performance. Its complete native build/license graph has not been
 reviewed here.
 
 ## Fixture inventory and acquisition
+
+Authoring follow-up (2026-10-31): optional [synthetic base reference harness](../tests/reference/README.md)
+uses pinned external LibOrbisPkg and .NET SDK 8.0.425; no production dependency
+added. Source data is generated, with non-executable sentinel instead of a game
+SELF. Generated package/reference binaries stay local, not approved redistributable
+fixtures. [Required crypto-input provenance/distribution](fpkg-authoring-provenance.md)
+remains blocked; successful local build is not licensing clearance.
 
 The workspace initially contained only `PLAN.md`. During research the user
 supplied a PS4 base and patch under `pkgs/` (two files observed). Both have PS4
