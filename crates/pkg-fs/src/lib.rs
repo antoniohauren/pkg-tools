@@ -73,6 +73,9 @@ pub fn valid_component(name: &str) -> bool {
 #[cfg(unix)]
 pub use disk::Output;
 
+#[cfg(unix)]
+pub use disk::SourceRoot;
+
 #[cfg(test)]
 mod tests {
     use super::selected_indices;
@@ -127,6 +130,70 @@ mod disk {
         .union(OFlags::CLOEXEC);
 
     pub struct Output(OwnedFd);
+
+    /// Descriptor-relative read-only sources. Never follows symlinks, including
+    /// root parents; regular files only. Does not freeze concurrent file edits.
+    pub struct SourceRoot(OwnedFd);
+
+    impl SourceRoot {
+        pub fn open(path: &Path) -> io::Result<Self> {
+            if !path.is_absolute() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "source root must be absolute",
+                ));
+            }
+            let mut root = fs::open("/", DIR, Mode::empty())?;
+            for part in path.components() {
+                match part {
+                    Component::RootDir | Component::CurDir => (),
+                    Component::Normal(name) => root = fs::openat(&root, name, DIR, Mode::empty())?,
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "unsafe source root",
+                        ));
+                    }
+                }
+            }
+            Ok(Self(root))
+        }
+
+        pub fn open_file(&self, path: &Path) -> io::Result<File> {
+            let mut parent = rustix::io::dup(&self.0)?;
+            let mut parts = path.components().peekable();
+            while let Some(part) = parts.next() {
+                let Component::Normal(name) = part else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unsafe source path",
+                    ));
+                };
+                if parts.peek().is_some() {
+                    parent = fs::openat(&parent, name, DIR, Mode::empty())?;
+                } else {
+                    // NONBLOCK prevents a raced FIFO replacement from hanging open.
+                    let file = File::from(fs::openat(
+                        &parent,
+                        name,
+                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+                        Mode::empty(),
+                    )?);
+                    if !file.metadata()?.is_file() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "source must be a regular file",
+                        ));
+                    }
+                    return Ok(file);
+                }
+            }
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty source path",
+            ))
+        }
+    }
 
     impl Output {
         /// Create a new root. Parents must exist and may not contain symlinks or `..`.

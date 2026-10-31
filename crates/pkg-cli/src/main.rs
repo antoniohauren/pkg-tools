@@ -10,7 +10,7 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools trophies INPUT.pkg [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg";
+const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools trophies INPUT.pkg [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg\n       pkg-tools gp4 create GAME_DIR OUTPUT.gp4 --passcode-file FILE --timestamp 'YYYY-MM-DD HH:MM:SS'\n       pkg-tools gp4 preflight PROJECT.gp4 --source-root GAME_DIR\n       pkg-tools gp4 image PROJECT.gp4 OUTPUT.pfs|OUTPUT.pfsc --source-root GAME_DIR\n       pkg-tools fpkg preflight INPUT.pkg";
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -170,6 +170,172 @@ fn human(out: &mut impl Write, doc: &Value) -> io::Result<()> {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    #[cfg(unix)]
+    if args.len() == 6 && args[0] == "gp4" && args[1] == "image" && args[4] == "--source-root" {
+        let cwd = env::current_dir()?;
+        let mut xml = String::new();
+        File::open(&args[2])?
+            .take(ps4_pkg::gp4::MAX_XML_SIZE as u64 + 1)
+            .read_to_string(&mut xml)?;
+        let project = ps4_pkg::gp4::Project::parse(&xml, &cwd.join(&args[2]))?;
+        let prepared =
+            ps4_pkg::authoring::PreparedProject::new(&project, &cwd.join(&args[5]), || false)?;
+        let containers = prepared
+            .resources()
+            .iter()
+            .filter(|r| matches!(r.placement, ps4_pkg::authoring::Placement::Container(_)))
+            .count();
+        let mut out = io::stdout().lock();
+        writeln!(
+            out,
+            "Prepared GP4 sources: {} files, {} bytes; {} container resources excluded from inner image.",
+            prepared.resources().len(),
+            prepared.source_bytes(),
+            containers
+        )?;
+        writeln!(
+            out,
+            "Scratch requirement: {} bytes (.pfs) / {} bytes (.pfsc), plus filesystem overhead. Sources will be revalidated before publication.",
+            prepared.pfs_size(),
+            prepared.pfsc_size()
+        )?;
+        out.flush()?;
+        prepared.write_inner_new(&cwd.join(&args[3]), || false)?;
+        writeln!(
+            out,
+            "Intermediate image published. Not a PKG; container resources, outer PFS, crypto, licenses and PlayGo are not emitted. Installation/launch unverified."
+        )?;
+        return Ok(());
+    }
+    if args.len() == 3 && args[0] == "fpkg" && args[1] == "preflight" {
+        let package = ps4_pkg::Package::open(BufReader::new(File::open(&args[2])?))?;
+        let inventory = ps4_pkg::authoring::preflight_package(package, || false)?;
+        let mut out = io::stdout().lock();
+        writeln!(
+            out,
+            "Package authoring inventory: {} container records, {} application files; keystone size: {:?}.",
+            inventory.records.len(),
+            inventory.application_files,
+            inventory.keystone_size
+        )?;
+        for record in &inventory.records {
+            writeln!(
+                out,
+                "  Record {:#x}: {:?}, {} bytes, encrypted={}, key index={}",
+                record.entry.id,
+                record.role,
+                record.entry.size,
+                record.entry.encrypted(),
+                record.entry.key_index()
+            )?;
+        }
+        for blocker in &inventory.input_blockers {
+            writeln!(out, "Input blocker: {blocker}")?;
+        }
+        for blocker in ps4_pkg::authoring::WRITER_BLOCKERS {
+            writeln!(out, "Writer gate: {blocker}")?;
+        }
+        writeln!(
+            out,
+            "Inventory only; build unavailable. No PKG built or sources changed. Header/digest/NP bytes withheld; integrity and rebuild readiness are unverified."
+        )?;
+        return Ok(());
+    }
+    if args.len() == 5 && args[0] == "gp4" && args[1] == "preflight" && args[3] == "--source-root" {
+        let cwd = env::current_dir()?;
+        let mut xml = String::new();
+        File::open(&args[2])?
+            .take(ps4_pkg::gp4::MAX_XML_SIZE as u64 + 1)
+            .read_to_string(&mut xml)?;
+        let project = ps4_pkg::gp4::Project::parse(&xml, &cwd.join(&args[2]))?;
+        let inventory = ps4_pkg::authoring::preflight(&project, &cwd.join(&args[4]), || false)?;
+        let mut out = io::stdout().lock();
+        writeln!(
+            out,
+            "Authoring inventory: {} (APP_VER {}, VERSION {}); {} files, {} directories, {} source bytes.",
+            inventory.identity.title_id,
+            inventory.identity.app_version,
+            inventory.identity.version,
+            inventory.resources.len(),
+            inventory.directory_count,
+            inventory.source_bytes
+        )?;
+        for resource in &inventory.resources {
+            writeln!(
+                out,
+                "  {:?}: {:?}, {} bytes; source {:?} (absolute={}, outside-project={})",
+                resource.source.target,
+                resource.kind,
+                resource.size,
+                resource.source.resolved,
+                resource.source.absolute_reference,
+                resource.source.outside_project_directory
+            )?;
+        }
+        for blocker in &inventory.input_blockers {
+            writeln!(out, "Input blocker: {blocker}")?;
+        }
+        for blocker in ps4_pkg::authoring::WRITER_BLOCKERS {
+            writeln!(out, "Writer gate: {blocker}")?;
+        }
+        writeln!(
+            out,
+            "Inventory only; build unavailable. No PKG built or sources changed."
+        )?;
+        return Ok(());
+    }
+    if args.len() == 8
+        && args[0] == "gp4"
+        && args[1] == "create"
+        && args[4] == "--passcode-file"
+        && args[6] == "--timestamp"
+    {
+        use std::path::Path;
+        let cwd = env::current_dir()?;
+        let source = cwd.join(&args[2]);
+        let passcode_file = cwd.join(&args[5]);
+        if std::fs::canonicalize(&passcode_file)?.starts_with(std::fs::canonicalize(&source)?) {
+            return Err("passcode file must be outside the application tree".into());
+        }
+        let mut passcode = String::new();
+        File::open(passcode_file)?
+            .take(34)
+            .read_to_string(&mut passcode)?;
+        if passcode.ends_with('\n') {
+            passcode.pop();
+        }
+        let settings = ps4_pkg::gp4::Settings {
+            passcode,
+            timestamp: args[7].to_str().ok_or("timestamp must be UTF-8")?.into(),
+            creation_date: None,
+            volume_id: None,
+            chunk_label: "Chunk #0".into(),
+            scenario_label: "Scenario #0".into(),
+        };
+        let project = ps4_pkg::gp4::Project::from_directory(
+            &source,
+            &cwd.join(Path::new(&args[3])),
+            settings,
+        )?;
+        let preflight = project.preflight(&source)?;
+        let external = preflight
+            .sources
+            .iter()
+            .filter(|s| s.absolute_reference || s.outside_project_directory)
+            .count();
+        project.write_new(&source)?;
+        writeln!(
+            io::stdout().lock(),
+            "Created base GP4: {} (APP_VER {}, VERSION {}); {} files, {} external/absolute references. Approved source root: {}. No PKG built.",
+            preflight.identity.title_id,
+            preflight.identity.app_version,
+            preflight.identity.version,
+            project.files().len(),
+            external,
+            source.display()
+        )?;
+        return Ok(());
+    }
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         writeln!(io::stdout().lock(), "{USAGE}")?;
         return Ok(());

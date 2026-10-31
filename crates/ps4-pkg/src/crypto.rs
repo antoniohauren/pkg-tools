@@ -51,14 +51,19 @@ pub(crate) fn recover(
     image: &mut [u8; 256],
     entry: &Entry,
 ) -> Result<([u8; 32], [u8; 32]), Error> {
-    let dk3 = unwrap(&keys[256 + 3 * 256..256 + 4 * 256], false)?;
-    check_digest(&dk3, &keys[32 + 3 * 32..32 + 4 * 32])?;
+    let dk3 = recover_dk3(keys)?;
     let material = entry_material(entry, &dk3);
     cbc_decrypt(image, &material[16..], &material[..16])?;
     let ekpfs = unwrap(image, true)?;
     // The wrapped image key may already include the new-crypt seed transform;
     // entry-key digest 1 describes the passcode-derived key, not this image key.
     Ok((dk3, ekpfs))
+}
+
+pub(crate) fn recover_dk3(keys: &[u8; 2048]) -> Result<[u8; 32], Error> {
+    let dk3 = unwrap(&keys[256 + 3 * 256..256 + 4 * 256], false)?;
+    check_digest(&dk3, &keys[32 + 3 * 32..32 + 4 * 32])?;
+    Ok(dk3)
 }
 
 pub(crate) fn entry_material(entry: &Entry, dk3: &[u8; 32]) -> [u8; 32] {
@@ -96,6 +101,16 @@ pub(crate) fn hmac(key: &[u8], data: &[u8]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
+pub(crate) fn derived_key(content_id: &[u8; 36], passcode: &[u8; 32], index: u32) -> [u8; 32] {
+    let mut padded_id = [0; 48];
+    padded_id[..36].copy_from_slice(content_id);
+    let mut hash = Sha256::new();
+    hash.update(Sha256::digest(index.to_be_bytes()));
+    hash.update(Sha256::digest(padded_id));
+    hash.update(passcode);
+    hash.finalize().into()
+}
+
 pub(crate) fn pfs_material(key: &[u8; 32], seed: &[u8], index: u32) -> [u8; 32] {
     let mut input = [0; 20];
     input[..4].copy_from_slice(&index.to_le_bytes());
@@ -108,4 +123,126 @@ pub(crate) fn xts(material: &[u8; 32]) -> Xts128<Aes128> {
         Aes128::new_from_slice(&material[16..]).unwrap(),
         Aes128::new_from_slice(&material[..16]).unwrap(),
     )
+}
+
+#[cfg(test)]
+mod known_answers {
+    use super::*;
+
+    fn hex<const N: usize>(s: &str) -> [u8; N] {
+        assert_eq!(s.len(), N * 2);
+        std::array::from_fn(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
+    }
+
+    #[test]
+    fn rfc4231_case_1_hmac_sha256() {
+        assert_eq!(
+            hmac(&[0x0b; 20], b"Hi There"),
+            hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+        );
+    }
+
+    #[test]
+    fn nist_sp800_38a_f2_2_cbc_aes128() {
+        let key = hex::<16>("2b7e151628aed2a6abf7158809cf4f3c");
+        let iv = hex::<16>("000102030405060708090a0b0c0d0e0f");
+        let mut ciphertext = hex::<64>(
+            "7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7",
+        );
+        cbc_decrypt(&mut ciphertext, &key, &iv).unwrap();
+        assert_eq!(
+            ciphertext,
+            hex(
+                "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710"
+            )
+        );
+    }
+
+    #[test]
+    fn independent_pfs_derivation_and_xts_sector() {
+        // Original public synthetic inputs; Python hashlib/hmac + OpenSSL-backed
+        // cryptography oracle, reproduced by tests/reference/check-outer-image.py.
+        let key = std::array::from_fn(|i| i as u8);
+        let seed: [u8; 16] = std::array::from_fn(|i| i as u8);
+        let material = pfs_material(&key, &seed, 1);
+        assert_eq!(
+            material,
+            hex("76be34e86d4a3793c4f2af46f63879f41b876753b3609b58c497052fc4f416b6")
+        );
+        assert_eq!(
+            pfs_material(&key, &seed, 2),
+            hex("e9d9d5c076c2b31e0a95557f14f36f20b99cfcc788f7c09e640ada5f49eeb7bd")
+        );
+        let mut sector: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        xts(&material).encrypt_area(&mut sector, 4096, 16, xts_mode::get_tweak_default);
+        assert_eq!(
+            &sector[..32],
+            &hex::<32>("ceed998c169a81d5e1ea5c383d78f1eb6999d121bddec95ecb297ec0865a6d70")
+        );
+        assert_eq!(
+            <[u8; 32]>::from(Sha256::digest(&sector)),
+            hex("af5cd198566f2d9370dfaf633d7c52c32e84f9390fadc8f16e0947d55a63b092")
+        );
+    }
+
+    #[test]
+    fn independent_legacy_passcode_zero_and_nonzero_seed_vectors() {
+        // Cross-checked with pinned L/F algorithms and independent Python/OpenSSL;
+        // recipe/origins: docs/crypto-unblocking-findings.md, public synthetic data.
+        let id = b"ZZ0000-CUSA00000_00-SYNTHETIC0000000";
+        let passcode = std::array::from_fn(|i| 0x21 + i as u8);
+        let keys: Vec<u8> = (0..7).flat_map(|i| derived_key(id, &passcode, i)).collect();
+        assert_eq!(
+            <[u8; 32]>::from(Sha256::digest(keys)),
+            hex("5d9db1f987ef961cb0f904b8a7637a4be7e1bd3836f002dcb475eb0d2fce8473")
+        );
+        let image = crate::outer_image::legacy_image_key(
+            std::str::from_utf8(id).unwrap(),
+            std::str::from_utf8(&passcode).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(image, derived_key(id, &passcode, 1));
+        for (seed, expected_material, expected_cipher, expected_hmac) in [
+            (
+                [0; 16],
+                "b02114543bfb205623678c02f21df7e9619816e0d22bdb6da979a20d68a38914",
+                "828b51da8f9f02e413b94ae8040419b20f15de95229ca73d77a949b217f4e2c5",
+                "188040fd26cada2fb26e36e22fcbfc8ee657f7e7ceb0da9b04263b51d417aae5",
+            ),
+            (
+                std::array::from_fn(|i| i as u8),
+                "53c45751d99c9076986bf98b72e9e094cbac6e97faeee65bfc5ca85961ed97e1",
+                "9cd2b41a557c5c3e1d50cb27453f8cb99ba7b083c0f8bb499608f41e7d56330a",
+                "92b7aceb3bbfdc8f96852005816c4bbf6532fa042dc803d445342869dde6b78f",
+            ),
+        ] {
+            let enc = pfs_material(&image, &seed, 1);
+            let signing = pfs_material(&image, &seed, 2);
+            assert_eq!(
+                <[u8; 32]>::from(Sha256::digest([enc, signing].concat())),
+                hex(expected_material)
+            );
+            let mut sector: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+            let mut padded = sector.clone();
+            padded.resize(65536, 0);
+            assert_eq!(
+                <[u8; 32]>::from(Sha256::digest(hmac(&signing, &padded))),
+                hex(expected_hmac)
+            );
+            xts(&enc).encrypt_area(&mut sector, 4096, 19, xts_mode::get_tweak_default);
+            assert_eq!(
+                <[u8; 32]>::from(Sha256::digest(sector)),
+                hex(expected_cipher)
+            );
+        }
+        for (id, passcode) in [
+            ("invalid", "short"),
+            (
+                std::str::from_utf8(id).unwrap(),
+                "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            ),
+        ] {
+            assert!(crate::outer_image::legacy_image_key(id, passcode).is_err());
+        }
+    }
 }

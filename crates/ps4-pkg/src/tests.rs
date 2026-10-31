@@ -233,6 +233,182 @@ fn package(raw: Vec<u8>) -> Vec<u8> {
     b
 }
 
+fn authoring_record(b: &mut [u8], slot: usize, id: u32, flags1: u32, flags2: u32, data: &[u8]) {
+    let offset = 0x3000 + slot * 0x400;
+    for (j, value) in [id, 0, flags1, flags2, offset as u32, data.len() as u32]
+        .iter()
+        .enumerate()
+    {
+        u32be(b, 0x1100 + slot * 32 + j * 4, *value);
+    }
+    b[offset..offset + data.len()].copy_from_slice(data);
+    u32be(b, 0x10, (slot + 1) as u32);
+}
+
+#[test]
+fn package_authoring_inventory_retains_non_extracted_metadata() {
+    let mut bytes = package(inner());
+    bytes[0x440..0x460].fill(0x17);
+    authoring_record(&mut bytes, 3, 0x80, 0, 0, &[0x53; 0x180]);
+    authoring_record(&mut bytes, 4, 0x402, 0, 0, b"synthetic NP title");
+    authoring_record(&mut bytes, 5, 0x403, 0, 0, b"synthetic NP binding");
+    authoring_record(&mut bytes, 6, 0x777, 0, 0, b"unknown");
+    let original = bytes.clone();
+    let inventory =
+        authoring::preflight_package(Package::open(Cursor::new(&bytes)).unwrap(), || false)
+            .unwrap();
+    assert_eq!(inventory.raw_header(), &bytes[..0x1100]);
+    assert_eq!(inventory.general_digests(), Some([0x53; 0x180].as_slice()));
+    assert_eq!(
+        inventory.np_resource(0x402),
+        Some(b"synthetic NP title".as_slice())
+    );
+    assert_eq!(
+        inventory.np_resource(0x403),
+        Some(b"synthetic NP binding".as_slice())
+    );
+    assert_eq!(inventory.keystone_size, None);
+    assert!(inventory.input_blockers.iter().any(|b| b.contains("0x777")));
+    assert!(
+        inventory
+            .input_blockers
+            .iter()
+            .any(|b| b.contains("keystone"))
+    );
+    let game = Package::open(Cursor::new(&bytes))
+        .unwrap()
+        .open_game()
+        .unwrap();
+    assert!(!game.entries().iter().any(|e| e.path().contains("npbind")));
+    assert_eq!(bytes, original);
+}
+
+#[test]
+fn bounded_authoring_record_decryption_and_refusal() {
+    let mut bytes = package(inner());
+    let clear = [0x56; 32];
+    authoring_record(&mut bytes, 3, 0x403, 0x8000_0000, 0x3000, &clear);
+    let entry = Package::open(Cursor::new(&bytes)).unwrap().entries()[3].clone();
+    let material = crypto::entry_material(&entry, &[0x24; 32]);
+    cbc_encrypt(
+        &mut bytes[entry.offset as usize..entry.offset as usize + 32],
+        &material[16..],
+        &material[..16],
+    );
+    let mut pkg = Package::open(Cursor::new(&bytes)).unwrap();
+    assert_eq!(
+        pkg.read_authoring_record(0x403, 32, || false)
+            .unwrap()
+            .unwrap(),
+        clear
+    );
+    assert!(matches!(
+        pkg.read_authoring_record(0x403, 31, || false),
+        Err(Error::LimitExceeded(_))
+    ));
+    assert!(matches!(
+        pkg.read_authoring_record(0x403, 32, || true),
+        Err(Error::Cancelled)
+    ));
+    assert!(
+        pkg.read_authoring_record(0x999, 32, || false)
+            .unwrap()
+            .is_none()
+    );
+    for key in [0, 1, 2, 4, 15] {
+        u32be(&mut bytes, 0x1100 + 3 * 32 + 12, key << 12);
+        let mut pkg = Package::open(Cursor::new(&bytes)).unwrap();
+        assert!(
+            matches!(pkg.read_authoring_record(0x403, 32, || false), Err(Error::DecryptionUnavailable { entry_id: 0x403, key_index }) if key_index == key as u8)
+        );
+        assert!(matches!(
+            authoring::preflight_package(pkg, || false),
+            Err(Error::DecryptionUnavailable { .. })
+        ));
+    }
+    u32be(&mut bytes, 0x1100 + 3 * 32 + 12, 0x3000);
+    u32be(&mut bytes, 0x1100 + 3 * 32 + 8, 0x9000_0000);
+    let mut pkg = Package::open(Cursor::new(&bytes)).unwrap();
+    assert!(matches!(
+        pkg.read_authoring_record(0x403, 32, || false),
+        Err(Error::Unsupported(_))
+    ));
+}
+
+#[test]
+fn package_authoring_keystone_is_preserved_not_generated() {
+    for size in [95, 96, 97] {
+        let mut raw = inner();
+        raw.resize(9 * BLOCK as usize, 0);
+        u64le(&mut raw, 0x30, 7);
+        inode(&mut raw, false, 5, true, BLOCK, 7);
+        inode(&mut raw, false, 6, false, size, 8);
+        raw[3 * BLOCK as usize..4 * BLOCK as usize].fill(0);
+        dir(
+            &mut raw,
+            3,
+            &[
+                ("eboot.bin", 2, 2),
+                ("empty-dir", 3, 3),
+                ("empty", 4, 2),
+                ("sce_sys", 5, 3),
+            ],
+        );
+        dir(&mut raw, 7, &[("keystone", 6, 2)]);
+        raw[8 * BLOCK as usize..8 * BLOCK as usize + size as usize].fill(0x63);
+        let inventory =
+            authoring::preflight_package(Package::open(Cursor::new(package(raw))).unwrap(), || {
+                false
+            })
+            .unwrap();
+        assert_eq!(inventory.keystone_size, Some(size));
+        assert_eq!(
+            inventory.keystone(),
+            (size == 96).then_some([0x63; 96].as_slice())
+        );
+        assert_eq!(
+            inventory
+                .input_blockers
+                .iter()
+                .any(|b| b.contains("keystone")),
+            size != 96
+        );
+    }
+}
+
+#[test]
+fn package_authoring_cancellation_and_hard_record_limit() {
+    let bytes = package(inner());
+    assert!(matches!(
+        authoring::preflight_package(Package::open(Cursor::new(&bytes)).unwrap(), || true),
+        Err(Error::Cancelled)
+    ));
+    let mut calls = 0;
+    assert!(matches!(
+        authoring::preflight_package(Package::open(Cursor::new(&bytes)).unwrap(), || {
+            calls += 1;
+            calls == 3
+        }),
+        Err(Error::Cancelled)
+    ));
+    let mut pkg = Package::open(Cursor::new(bytes)).unwrap();
+    pkg.entries[2].size = 65537;
+    let mut reads = 0;
+    assert!(matches!(
+        pkg.read_authoring_record(0x1000, 65537, || {
+            reads += 1;
+            reads == 3
+        }),
+        Err(Error::Cancelled)
+    ));
+    assert_eq!(reads, 3);
+    pkg.entries[2].size = authoring::MAX_RECORD_SIZE + 1;
+    assert!(matches!(
+        pkg.read_authoring_record(0x1000, u32::MAX, || false),
+        Err(Error::LimitExceeded(_))
+    ));
+}
+
 #[test]
 #[ignore = "regenerates the synthetic pkg-ops listing fixture"]
 fn write_listing_fixture() {

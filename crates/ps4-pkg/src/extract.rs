@@ -70,7 +70,7 @@ pub(crate) fn component(name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn metadata_name(id: u32) -> Option<String> {
+pub(crate) fn metadata_name(id: u32) -> Option<String> {
     let fixed = match id {
         0x1000 => "param.sfo",
         0x1001 => "playgo-chunk.dat",
@@ -447,7 +447,7 @@ impl<R: Read + Seek> Seek for EntryReader<'_, R> {
     }
 }
 
-fn read_container(
+pub(crate) fn read_container(
     source: &mut impl ReadAt,
     e: &Entry,
     dk3: &[u8; 32],

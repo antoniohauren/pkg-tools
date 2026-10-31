@@ -1,8 +1,12 @@
 //! PS4 inspection and streaming fake-package extraction. No signature authentication.
 
+pub mod authoring;
 mod crypto;
 mod extract;
+pub mod gp4;
+pub mod inner_image;
 mod input;
+pub mod outer_image;
 mod pfs;
 mod pfsc;
 pub use extract::{EntryReader, FileEntry, FileKind, Game};
