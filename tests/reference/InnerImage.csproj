@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="InnerImage.cs" />
+    <Compile Include="$(ReferenceRoot)/LibOrbisPkg/PKG/*.cs;$(ReferenceRoot)/LibOrbisPkg/PFS/*.cs;$(ReferenceRoot)/LibOrbisPkg/GP4/*.cs;$(ReferenceRoot)/LibOrbisPkg/SFO/*.cs;$(ReferenceRoot)/LibOrbisPkg/Util/*.cs;$(ReferenceRoot)/LibOrbisPkg/Rif/*.cs;$(ReferenceRoot)/LibOrbisPkg/PlayGo/*.cs" Exclude="$(ReferenceRoot)/LibOrbisPkg/PFS/PFSCReader.cs" />
+    <Compile Include="$(ReferencePfsc)" />
+  </ItemGroup>
+</Project>
