@@ -1,6 +1,7 @@
 //! PS4 inspection and streaming fake-package extraction. No signature authentication.
 
 pub mod authoring;
+pub mod container;
 mod crypto;
 mod extract;
 pub mod gp4;
