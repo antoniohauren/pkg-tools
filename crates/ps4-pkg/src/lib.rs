@@ -10,6 +10,8 @@ mod input;
 pub mod outer_image;
 mod pfs;
 mod pfsc;
+#[cfg(unix)]
+pub mod rebuild;
 pub use extract::{EntryReader, FileEntry, FileKind, Game};
 #[cfg(test)]
 mod tests;

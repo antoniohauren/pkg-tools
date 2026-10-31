@@ -246,7 +246,7 @@ fn authoring_record(b: &mut [u8], slot: usize, id: u32, flags1: u32, flags2: u32
 }
 
 #[test]
-fn package_authoring_inventory_retains_non_extracted_metadata() {
+fn package_authoring_inventory_and_game_retain_np_metadata() {
     let mut bytes = package(inner());
     bytes[0x440..0x460].fill(0x17);
     authoring_record(&mut bytes, 3, 0x80, 0, 0, &[0x53; 0x180]);
@@ -275,11 +275,26 @@ fn package_authoring_inventory_retains_non_extracted_metadata() {
             .iter()
             .any(|b| b.contains("keystone"))
     );
-    let game = Package::open(Cursor::new(&bytes))
+    let mut game = Package::open(Cursor::new(&bytes))
         .unwrap()
         .open_game()
         .unwrap();
-    assert!(!game.entries().iter().any(|e| e.path().contains("npbind")));
+    for (path, expected) in [
+        ("sce_sys/nptitle.dat", b"synthetic NP title".as_slice()),
+        ("sce_sys/npbind.dat", b"synthetic NP binding".as_slice()),
+    ] {
+        let index = game
+            .entries()
+            .iter()
+            .position(|e| e.path() == path)
+            .unwrap();
+        let mut out = Vec::new();
+        game.read_entry(index)
+            .unwrap()
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, expected);
+    }
     assert_eq!(bytes, original);
 }
 

@@ -30,6 +30,10 @@ pub(crate) struct Pfs<T> {
 }
 
 impl<T: ReadAt> Pfs<T> {
+    pub(crate) fn image_size(&self) -> u64 {
+        self.source.len()
+    }
+
     pub fn open(mut source: T, key: Option<&[u8; 32]>) -> Result<Self, Error> {
         let mut h = [0; 0x400];
         source.read_at(0, &mut h)?;

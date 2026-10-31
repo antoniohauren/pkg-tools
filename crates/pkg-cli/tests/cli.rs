@@ -26,7 +26,7 @@ fn fpkg_preflight_reports_inventory_not_writer_success() {
     assert!(text.contains("Package authoring inventory:"));
     assert!(text.contains("missing general digests"));
     assert!(text.contains("missing or wrong-size original sce_sys/keystone"));
-    assert!(text.contains("build unavailable. No PKG built"));
+    assert!(text.contains("Separate fpkg rebuild command validates its narrow legacy GD profile"));
     assert!(text.contains("Header/digest/NP bytes withheld"));
     assert!(!text.contains("raw_hex"));
     assert_eq!(fs::read(&path).unwrap(), original);
@@ -183,7 +183,9 @@ fn gp4_create_requires_explicit_settings_and_never_overwrites() {
     let text = String::from_utf8(result.stdout).unwrap();
     assert!(text.contains("missing sce_sys/keystone"));
     assert!(text.contains("build unavailable. No PKG built"));
-    assert!(text.contains("provenance/distribution review is not cleared"));
+    assert!(
+        text.contains("new-license and new-keystone generation material/provenance remains gated")
+    );
     assert!(!text.contains("0123456789abcdef0123456789abcdef"));
     assert!(!preflight(&game.join("sce_sys")).status.success());
     assert_eq!(fs::read(&output).unwrap(), xml);

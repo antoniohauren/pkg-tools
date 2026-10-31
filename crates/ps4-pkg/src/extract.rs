@@ -32,6 +32,9 @@ pub struct FileEntry {
     source: Source,
 }
 impl FileEntry {
+    pub(crate) fn is_container(&self) -> bool {
+        matches!(self.source, Source::Container(_))
+    }
     /// Portable, slash-separated path relative to the application root.
     pub fn path(&self) -> &str {
         &self.path
@@ -72,6 +75,8 @@ pub(crate) fn component(name: &str) -> Result<(), Error> {
 
 pub(crate) fn metadata_name(id: u32) -> Option<String> {
     let fixed = match id {
+        0x402 => "nptitle.dat",
+        0x403 => "npbind.dat",
         0x1000 => "param.sfo",
         0x1001 => "playgo-chunk.dat",
         0x1002 => "playgo-chunk.sha",
@@ -184,7 +189,15 @@ impl Tree {
 impl<R: Read + Seek> Package<R> {
     /// Recover public fake-package keys and enumerate the supported nested PFS.
     /// Does not modify the source or authenticate every payload block.
-    pub fn open_game(mut self) -> Result<Game<R>, Error> {
+    pub fn open_game(self) -> Result<Game<R>, Error> {
+        self.open_game_checked(false)
+    }
+
+    pub(crate) fn open_rebuild_game(self) -> Result<Game<R>, Error> {
+        self.open_game_checked(true)
+    }
+
+    fn open_game_checked(mut self, rebuilding: bool) -> Result<Game<R>, Error> {
         if self.header.content_type != 0x1a || self.header.content_flags & 0x0100_0000 != 0 {
             return Err(Error::Unsupported(
                 "extraction requires a GD base/full update (no delta/DLC/theme)",
@@ -228,6 +241,17 @@ impl<R: Read + Seek> Package<R> {
             reader: Rc::clone(&reader),
             size: self.header.package_size,
         };
+        if rebuilding {
+            let mut header = [0; 0x400];
+            shared().read_at(self.header.pfs_offset, &mut header)?;
+            if crate::input::le16(&header, 0x1c) != 0xd
+                || crate::input::le64(&header, 0x38) != self.header.pfs_size / 65536
+            {
+                return Err(Error::Unsupported(
+                    "rebuild requires S32 outer image metadata",
+                ));
+            }
+        }
         let mut outer = Pfs::open(
             Region {
                 source: shared(),
@@ -239,6 +263,11 @@ impl<R: Read + Seek> Package<R> {
         let root = outer.uroot()?;
         let root = outer.inode(root)?;
         let children = outer.children(&root)?;
+        if rebuilding && children.len() != 1 {
+            return Err(Error::Unsupported(
+                "rebuild requires exactly one outer image resource",
+            ));
+        }
         let images: Vec<_> = children
             .iter()
             .filter(|(n, _, dir)| n == "pfs_image.dat" && !dir)
@@ -250,7 +279,28 @@ impl<R: Read + Seek> Package<R> {
         if inode.mode & 0xf000 != 0x8000 {
             return Err(Error::Malformed("outer image inode type"));
         }
-        let mut inner = Pfs::open(Pfsc::open(PfsFile { pfs: outer, inode })?, None)?;
+        let original_inner_size = inode.compressed_size;
+        if rebuilding && (inode.flags != 0xd || inode.size == inode.compressed_size) {
+            return Err(Error::Unsupported("rebuild requires PFSC image metadata"));
+        }
+        let mut pfsc = Pfsc::open(PfsFile { pfs: outer, inode })?;
+        if rebuilding {
+            let mut header = [0; 0x400];
+            pfsc.read_at(0, &mut header)?;
+            if crate::input::le16(&header, 0x1c) != 8
+                || crate::input::le64(&header, 0x38) != pfsc.len() / 65536
+            {
+                return Err(Error::Unsupported(
+                    "rebuild requires clear D32 inner image metadata",
+                ));
+            }
+        }
+        let mut inner = Pfs::open(pfsc, None)?;
+        if rebuilding && inner.image_size() != original_inner_size {
+            return Err(Error::Malformed(
+                "outer image compressed size disagrees with PFSC",
+            ));
+        }
         let root = inner.uroot()?;
         let mut pending = vec![(String::new(), root)];
         let mut seen = HashSet::new();
@@ -312,6 +362,9 @@ impl<R: Read + Seek> Package<R> {
 }
 
 impl<R: Read + Seek> Game<R> {
+    pub(crate) fn inner_image_size(&self) -> u64 {
+        self.inner.image_size()
+    }
     pub fn entries(&self) -> &[FileEntry] {
         &self.entries
     }
@@ -463,7 +516,13 @@ pub(crate) fn read_container(
     while !data.is_empty() {
         let start = offset / 16 * 16;
         let skip = (offset - start) as usize;
-        let full_end = u64::from(e.size) / 16 * 16;
+        // This source-confirmed NP profile stores/hash-covers zero-padded CBC.
+        let full_end =
+            if e.id == 0x403 && e.size == 0x214 && e.flags1 == 0x8000_0000 && e.flags2 == 0x3000 {
+                0x220
+            } else {
+                u64::from(e.size) / 16 * 16
+            };
         let mut iv = [0; 16];
         if start == 0 {
             iv.copy_from_slice(&material[..16]);
@@ -533,6 +592,43 @@ mod tests {
                 .add(".PKG-TOOLS-INCOMPLETE".into(), entry())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn np_binding_reads_declared_bytes_from_padded_cbc_storage() {
+        let e = Entry {
+            id: 0x403,
+            name_offset: 0,
+            flags1: 0x8000_0000,
+            flags2: 0x3000,
+            offset: 0,
+            size: 0x214,
+        };
+        let id = "ZZ0000-CUSA00000_00-SYNTHETIC0000000";
+        let pass = "00000000000000000000000000000000";
+        let mut record = [0; 32];
+        for (i, word) in [e.id, 0, e.flags1, e.flags2, 0, e.size].iter().enumerate() {
+            record[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        let plain: Vec<u8> = (0..e.size).map(|i| (i % 251) as u8).collect();
+        let bytes = crate::container::encrypt_metadata(&record, id, pass, &plain).unwrap();
+        assert_eq!(bytes.len(), 0x220);
+        let mut source = Shared {
+            reader: Rc::new(RefCell::new(io::Cursor::new(bytes))),
+            size: 0x220,
+        };
+        let key = crypto::derived_key(
+            id.as_bytes().try_into().unwrap(),
+            pass.as_bytes().try_into().unwrap(),
+            3,
+        );
+        for start in [0, 1, 0x1ff, 0x20f, 0x210, 0x211, 0x213] {
+            let mut out = vec![0; plain.len() - start];
+            read_container(&mut source, &e, &key, start as u64, &mut out).unwrap();
+            assert_eq!(out, plain[start..]);
+        }
+        assert_eq!(metadata_name(0x402).as_deref(), Some("nptitle.dat"));
+        assert_eq!(metadata_name(0x403).as_deref(), Some("npbind.dat"));
     }
 
     #[test]

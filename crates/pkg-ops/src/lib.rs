@@ -7,6 +7,20 @@ pub mod trophies;
 
 pub use listing::{FileEntry, FileKind, list};
 
+/// Rebuild a supported PS4 GD base without replacing source or existing output.
+/// No transfer/install; original license/keystone and application bytes are kept.
+#[cfg(unix)]
+pub fn rebuild_ps4(
+    source: &Path,
+    destination: &Path,
+    passcode: &[u8; 32],
+    cancelled: &AtomicBool,
+) -> std::io::Result<()> {
+    ps4_pkg::rebuild::rebuild_new(source, destination, passcode, || {
+        cancelled.load(Ordering::Relaxed)
+    })
+}
+
 use std::{
     fs::File,
     io::{BufReader, Read, Seek},
@@ -88,13 +102,18 @@ fn extract_selection(
 
 /// Recognizes cancellation, including errors wrapping an incomplete output tree.
 pub fn was_cancelled(error: &(dyn std::error::Error + 'static)) -> bool {
-    matches!(
-        error.downcast_ref::<ps4_pkg::Error>(),
-        Some(ps4_pkg::Error::Cancelled)
-    ) || matches!(
-        error.downcast_ref::<ps3_pkg::Error>(),
-        Some(ps3_pkg::Error::Cancelled)
-    ) || error.source().is_some_and(was_cancelled)
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::Interrupted)
+        || matches!(
+            error.downcast_ref::<ps4_pkg::Error>(),
+            Some(ps4_pkg::Error::Cancelled)
+        )
+        || matches!(
+            error.downcast_ref::<ps3_pkg::Error>(),
+            Some(ps3_pkg::Error::Cancelled)
+        )
+        || error.source().is_some_and(was_cancelled)
 }
 
 #[cfg(test)]
@@ -104,6 +123,10 @@ mod tests {
     #[test]
     fn cancellation_includes_incomplete_output_errors() {
         assert!(was_cancelled(&ps4_pkg::Error::Cancelled));
+        assert!(was_cancelled(&std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "rebuild cancelled"
+        )));
         assert!(!was_cancelled(&ps4_pkg::Error::Malformed("bad data")));
         assert!(was_cancelled(&ps4_pkg::Error::IncompleteExtraction {
             path: "/output".into(),

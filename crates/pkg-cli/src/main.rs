@@ -10,7 +10,7 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools trophies INPUT.pkg [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg\n       pkg-tools gp4 create GAME_DIR OUTPUT.gp4 --passcode-file FILE --timestamp 'YYYY-MM-DD HH:MM:SS'\n       pkg-tools gp4 preflight PROJECT.gp4 --source-root GAME_DIR\n       pkg-tools gp4 image PROJECT.gp4 OUTPUT.pfs|OUTPUT.pfsc --source-root GAME_DIR\n       pkg-tools fpkg preflight INPUT.pkg";
+const USAGE: &str = "Usage: pkg-tools inspect INPUT.pkg [--json]\n       pkg-tools inspect PARAM.SFO [--json]\n       pkg-tools trophies INPUT.pkg [--json]\n       pkg-tools extract INPUT.pkg OUTPUT_DIR\n       pkg-tools pack INPUT_DIR OUTPUT.zar\n       pkg-tools convert GAME.pkg OUTPUT.zar [--update UPDATE.pkg]\n       pkg-tools liberate GAME.pkg LICENSE.rap OUTPUT.pkg\n       pkg-tools gp4 create GAME_DIR OUTPUT.gp4 --passcode-file FILE --timestamp 'YYYY-MM-DD HH:MM:SS'\n       pkg-tools gp4 preflight PROJECT.gp4 --source-root GAME_DIR\n       pkg-tools gp4 image PROJECT.gp4 OUTPUT.pfs|OUTPUT.pfsc --source-root GAME_DIR\n       pkg-tools fpkg preflight INPUT.pkg\n       pkg-tools fpkg rebuild INPUT.pkg OUTPUT.pkg [--passcode-file FILE]";
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -171,6 +171,33 @@ fn human(out: &mut impl Write, doc: &Value) -> io::Result<()> {
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     #[cfg(unix)]
+    if matches!(args.len(), 4 | 6) && args[0] == "fpkg" && args[1] == "rebuild" {
+        let mut passcode = ps4_pkg::rebuild::DEFAULT_PASSCODE;
+        if args.len() == 6 {
+            if args[4] != "--passcode-file" {
+                return Err(USAGE.into());
+            }
+            let mut bytes = Vec::new();
+            File::open(&args[5])?.take(34).read_to_end(&mut bytes)?;
+            if bytes.len() == 33 && bytes[32] == b'\n' {
+                bytes.pop();
+            }
+            passcode = bytes.try_into().map_err(
+                |_| "passcode file must contain 32 printable ASCII bytes (optional trailing LF)",
+            )?;
+        }
+        pkg_ops::rebuild_ps4(
+            std::path::Path::new(&args[2]),
+            std::path::Path::new(&args[3]),
+            &passcode,
+            &AtomicBool::new(false),
+        )?;
+        println!(
+            "Native base package rebuilt; original license, keystone and application bytes preserved. Installation, launch and save compatibility unverified. No transfer/install performed."
+        );
+        return Ok(());
+    }
+    #[cfg(unix)]
     if args.len() == 6 && args[0] == "gp4" && args[1] == "image" && args[4] == "--source-root" {
         let cwd = env::current_dir()?;
         let mut xml = String::new();
@@ -237,7 +264,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         writeln!(
             out,
-            "Inventory only; build unavailable. No PKG built or sources changed. Header/digest/NP bytes withheld; integrity and rebuild readiness are unverified."
+            "Inventory only; no PKG built or sources changed. Separate fpkg rebuild command validates its narrow legacy GD profile. Header/digest/NP bytes withheld; this inventory does not establish integrity or rebuild readiness."
         )?;
         return Ok(());
     }

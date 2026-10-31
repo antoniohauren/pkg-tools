@@ -22,11 +22,11 @@ use crate::{Entry, Error, FileKind, Package, crypto, extract, input::ReadAt};
 
 const KEYSTONE_SIZE: u64 = 96;
 
-/// Open gates apply even to an otherwise suitable synthetic project.
+/// Gates for directory/GP4 authoring, distinct from source-backed `rebuild`.
 pub const WRITER_BLOCKERS: &[&str] = &[
-    "native PKG writer is not implemented (intermediate signed/encrypted images only)",
-    "authoring crypto-input provenance/distribution review is not cleared",
-    "container metadata/RSA/RIF writer crypto vectors and final integrity validation are incomplete",
+    "directory/GP4-to-PKG authoring is unavailable; fpkg rebuild supports only validated source-backed GD profiles",
+    "new-license and new-keystone generation material/provenance remains gated",
+    "NP/trophy generation, custom PlayGo, updates and unknown container records remain unsupported",
     "console installation/launch and save compatibility are unverified",
 ];
 
@@ -74,7 +74,7 @@ fn classify(path: &str) -> ResourceKind {
     }
 }
 
-fn container_id(path: &str) -> Option<u32> {
+pub(crate) fn container_id(path: &str) -> Option<u32> {
     match path {
         "sce_sys/param.sfo" => Some(0x1000),
         "sce_sys/pic1.png" => Some(0x1006),

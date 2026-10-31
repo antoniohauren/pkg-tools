@@ -357,7 +357,7 @@ fn authoring_inventory_preserves_sources_and_reports_real_build_gates() {
     assert!(
         authoring::WRITER_BLOCKERS
             .iter()
-            .any(|b| b.contains("not implemented"))
+            .any(|b| b.contains("directory/GP4-to-PKG authoring is unavailable"))
     );
 
     fs::create_dir(source.join("sce_sys/trophy")).unwrap();
