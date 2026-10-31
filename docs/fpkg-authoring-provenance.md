@@ -12,7 +12,10 @@ other wrapping moduli remain additional numeric inputs. Existing inclusion is no
 automatic approval of writer uses. Outer-PFS legacy derivation/HMAC/XTS need no new
 fixed secret and are now implemented/tested with explicit caller inputs. This
 narrows the image-layer gate only; debug-RIF/keystone/remaining-modulus provenance,
-deterministic RSA vectors and distribution review below remain unresolved.
+distribution review below remain unresolved. Synthetic metadata CBC/deterministic
+public-RSA vectors now pass independent Python and pinned L comparisons; no
+production constants or private operations were added. This clears algorithm
+evidence only, not the full-writer input/distribution decisions below.
 
 ## Required inputs for the candidate synthetic GD base
 
@@ -66,3 +69,29 @@ expand the existing offline/public-fake-key RSA exception to user secret keys.
 provenance/distribution gate **not cleared**. Executed synthetic oracle proves
 reference interoperability, not legal provenance, authentic signing or console
 acceptance. No full-update binding inference follows from any of these inputs.
+
+## Follow-up: what the base-writer gate actually permits
+
+Re-inspected clean L checkout at the pin above on 2026-10-31, including
+`LICENSE.txt`, `PKG/PkgBuilder.cs`, `PlayGo/{ChunkDat,Manifest}.cs` and
+`Rif/LicenseDat.cs`. No numeric material was copied or new rights approval found.
+
+| Work item | Source-established boundary | Decision still required |
+| --- | --- | --- |
+| Native layout, PlayGo and digest algorithms | PlayGo source has no crypto-key input; `ChunkDat.FromProject` constructs one chunk/scenario from content ID, and builder supplies final image sizes. History `63fefea15b683b56fdbdca99da1d81f3021b8293` introduces this as “bare-bones playgo chunk support”. | Independently implement format behavior, not a source/template transplant. PlayGo serialization is not blocked on another missing secret, but still needs independent validation. LGPL reference status does not itself clear copied implementation/text. |
+| Existing reader-derived fake-header modulus | Slot 3 is mathematically available from existing reader inputs; fake-header operation is public exponentiation, not private signing. | Explicit writer-use/distribution review remains; possession in reader is not approval. Six other package moduli still lack established original authority. |
+| Debug RIF for GD without DLC entitlement | `LicenseDat.cs:15-33` always encrypts and signs; optional entitlement branch does not bypass either operation. GD sets `SkuFlag=3`. | AES/RSA input provenance, distribution and secret-operation dependency policy remain blocked. No-entitlement GD is **not** a license-free workaround. |
+| Supplied 96-byte keystone | Preserving an already supplied resource avoids generating new HMACs; length validation proves only shape. | Caller must have permission for that input. Opaque sentinels support image tests only; they do not establish valid homebrew/save identity or clear package acceptance. |
+| External/local-input crypto material | Technically separable from layout implementation. | **No such input policy is approved here.** Require value-specific authority, role/size checks, sensitive-memory/logging policy and dependency review before using it. A local file or callback does not make source provenance irrelevant. |
+
+History `f5f599ebcfc9fbfd83c6da5d6e9cf9a006af5502` is titled “Fixes for GD pkg
+building that allow installing+running!” and adds the GD SKU flag, promote-size
+and main-entry-size updates. This is first-party historical motivation, **not a reproducible
+hardware acceptance record for our output**, nor permission to distribute inputs.
+
+**Feasible now:** independently implement/test keyless container planning,
+PlayGo, bounded metadata encryption with caller-derived keys and synthetic RSA
+encoding using original test inputs. Keep incomplete results intermediate/internal;
+do not publish a complete supported `.pkg` or bypass readiness blockers. A complete
+candidate GD writer additionally needs reviewed wrapping inputs and valid debug-RIF/
+keystone policy, then the [explicit acceptance gates](fpkg-authoring-contract.md#base-container-finalization-and-acceptance-gates).

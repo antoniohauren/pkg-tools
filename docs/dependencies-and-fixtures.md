@@ -7,6 +7,17 @@ dependencies below; the later candidate table retains historical research.
 
 ## Trophy reader
 
+Container-crypto follow-up (2026-10-31): no dependency, feature or lockfile changes.
+Bounded metadata authoring reuses existing AES-CBC/SHA256 and D[index] derivation.
+Deterministic type-2 wrapping uses existing `rsa::BigUint::modpow` and validated
+`RsaPublicKey`, strictly public exponent 65537, raw RSA-2048 modulus and 32-byte
+messages. No private signing/decryption or package constants added. Rust vectors
+match independent Python MT19937/hashlib/integer pow/OpenSSL AES and pinned L.
+Only public half of original disposable generated pair appears in test code;
+private half discarded. This public-only format operation does not extend the
+RUSTSEC-2023-0071 exception to secret user keys or debug-RIF signing. Deterministic
+legacy padding leaks equality; not a general-purpose modern encryption API.
+
 Outer-PFS follow-up (2026-10-31): no dependency/lockfile/fixed-key changes. Native
 writer reuses existing HMAC/SHA256/AES-XTS with explicit ready image key; legacy
 content-ID/passcode derivation adds no fixed secret. Known answers: RFC 4231 case 1,

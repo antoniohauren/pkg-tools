@@ -2,9 +2,9 @@
 
 Research: 2026-10-31. Scope: engineering evidence for native PS4 synthetic-GD
 authoring, not console security bypass, recovery of private inputs, or permission
-to distribute embedded material. Only this findings file was changed. Existing
-authoring/provenance contracts remain authoritative until maintainers integrate
-these narrower results. Parallel writer work was not modified or tested.
+to distribute embedded material. Existing authoring/provenance contracts remain
+authoritative. The follow-up below integrates source findings in those contracts;
+parallel writer work was not modified or tested by this documentation investigation.
 
 ## Outcome: gates that can actually narrow
 
@@ -255,3 +255,95 @@ implementations. Neither L nor F was executed for these fixed-input vectors.
 No Cargo/build, workspace test/lint/format, graphical, reference rebuild,
 console/emulator, secret-signing or private-fixture checks were run here. No
 legal conclusion, complete package-writer readiness or console support is claimed.
+
+## Follow-up: container blockers versus implementable format work
+
+Re-inspected clean L checkout at the same pin on 2026-10-31. These findings come
+from source/history inspection, not a newly built native/reference PKG:
+
+* **PlayGo introduces no fixed crypto input.** `PlayGo/ChunkDat.cs:42-160`
+  constructs a 416-byte little-endian DAT, one physical/inner microchunk and one
+  scenario. `PkgBuilder.cs:453-465` fills physical size with **whole package size**
+  and inner size with **clear inner-PFS size**, not PFSC/outer stored size. Both
+  offsets are zero. `Manifest.cs:42-52` uses a fixed one-scenario manifest. Chunk/
+  scenario labels are hardcoded defaults, not imported GP4 labels; preserving custom
+  labels in GP4 is not proof the reference builder honors them.
+* **SHA table needs final-layout sizing.** `PkgBuilder.cs:428-461` estimates
+  reservation, aligns the body, then sets actual table length to
+  `4 * (package_size / 65536)`. `:197-203` writes four leading SHA256 bytes per
+  final **stored** 64-KiB PFS block at its package-relative slot; pre-PFS slots
+  remain zero. This is neither an HMAC nor the entire 32-byte SHA256. Native
+  planning must account for the SHA table's own effect on body alignment; the
+  reference's estimate/extra-space heuristic is not an arithmetic proof.
+* **General digests depend on exact SFO text serialization.** `Pkg.cs:126-181`
+  hashes ASCII `ATTRIBUTE` + value, optional `ATTRIBUTE2` + value, `CATEGORY` +
+  value, `FORMAT` + value, `PUBTOOLVER` + value, with no separators. Integer
+  `ToString` is lowercase `0x` plus eight lowercase hex digits
+  (`SFO/ParamSfo.cs:294-309`), not decimal or raw LE32. Header general digest
+  covers `[0,0x40)` followed by `[0x400,0x480)`, excluding the body hash fields;
+  no circular dependency on the final body digest is implied.
+* **Stored-entry hashes are post-encryption.** `PkgWriter.cs:12-25` writes
+  encrypted metadata first; `PkgBuilder.cs:151-193` hashes declared stored lengths,
+  excluding alignment gaps, into ascending-ID table slots. DIGESTS self slot stays
+  zero. SC aggregate 1 concatenates five complete entries in ENTRY_KEYS, IMAGE_KEY,
+  GENERAL_DIGESTS, METAS, DIGESTS order; aggregate 2 omits DIGESTS and limits METAS
+  to `sc_entry_count * 32` bytes. Neither is simply a body prefix hash.
+* **RIF remains mandatory in the reference path.** `PkgBuilder.cs:312-313,469-487`
+  constructs both license records. `LicenseDat.cs:15-33,67-79` always invokes
+  secret AES encryption and private RSA signing even with no entitlement input.
+  There is no source-supported “omit licenses for synthetic GD” branch here.
+* **27 checks are not complete coverage.** `PkgValidator.cs:144-182` skips unset
+  and unknown general digests; `:302-313` reports fake-header mismatch as `NoKey`.
+  It has no PlayGo DAT/XML/SHA-table consistency checks or all-block PFS HMAC walk.
+  Acceptance must enumerate expected checks, reject missing/NoKey results and run
+  independent semantic/integrity checks, not rely on an unchanged total count.
+
+History evidence: [`63fefea15b683b56fdbdca99da1d81f3021b8293`](https://github.com/maxton/LibOrbisPkg/commit/63fefea15b683b56fdbdca99da1d81f3021b8293)
+introduces bare-bones PlayGo; [`f5f599ebcfc9fbfd83c6da5d6e9cf9a006af5502`](https://github.com/maxton/LibOrbisPkg/commit/f5f599ebcfc9fbfd83c6da5d6e9cf9a006af5502)
+adds promote/main-entry-size updates and GD SKU flag under an install/run claim. Neither
+supplies our hardware result, a licensing grant for embedded numeric material,
+NP/trophy coverage or a selected-base update recipe.
+
+**Remaining hard stop:** original authority/distribution for six wrapping moduli,
+debug-RIF AES/RSA inputs and generated-keystone constants; reviewed writer use of
+existing publicized inputs; secret-signing dependency policy. Metadata-encryption,
+deterministic RSA/RIF vectors and independent complete-container checks remain
+engineering acceptance work. PlayGo/layout research can proceed independently;
+it does not clear those gates. See [concrete acceptance checklist](fpkg-authoring-contract.md#base-container-finalization-and-acceptance-gates).
+
+Implementation follow-up: native keyless DAT/default manifest, streamed PlayGo SHA,
+stored-PFS/entry/body/SC hashes and supported general/header digest records now have
+pinned-reference and independent Python synthetic comparisons. No additional fixed
+material, crypto writer integration, license/signature generation or PKG publication
+was added. See [implemented subset](fpkg-authoring-contract.md#implemented-keyless-playgointegrity-subset-2026-10-31)
+and [reproduction](../tests/reference/README.md#keyless-container-generation).
+
+## Metadata/public-wrapping implementation follow-up (2026-10-31)
+
+`container::encrypt_metadata` now implements bounded final-record-bound CBC with
+explicit content ID/build passcode and correct D[2]/D[3] selection. It encrypts
+zero padding only to the caller's matching declared 16-byte stored length; no CFB
+tail authoring, missing-key substitution, license generation or package emission.
+`container::public_rsa_wrap` implements the exact deterministic algorithm above
+with caller-supplied raw public modulus/exponent and existing maintained bignum
+public exponentiation. No primitive blocker, dependency change, embedded production
+material, private signing or key configuration UI was needed.
+
+Executed: fixed original synthetic generated pair's **public half only**, message
+bytes `0..31`, four metadata vectors using synthetic ID/passcode recipe above.
+CPython built-in MT19937 + hashlib + integer pow independently reproduced all 256
+padding bytes and all 256 wrapped bytes; OpenSSL-backed cryptography reproduced
+both indices and changed-offset/changed-flags CBC bytes. External pinned clean L
+`RSA2048EncryptKey` and `AesCbcCfb128Encrypt` also matched these same artifacts.
+Public test modulus appears only in tests; private half discarded, never logged.
+Padding-block SHA256 is `393fc123e6fe2d0f9492d1bf6e6dd31eb8a24cac67f5095b902559d6bdb95601`;
+wrapped-byte SHA256 is `992b8f5c359593513c98449cca5b3e991f3b84957943c046d4f24fbb101b9dc3`.
+[Reproduction](../tests/reference/README.md#synthetic-container-crypto-vectors).
+
+This narrows algorithm/vector gates only. Existing wrapping-input distribution
+decisions, debug-RIF secret signing, generated keystone, integrated ENTRY_KEYS/
+fake-header/full-container verification and hardware gates remain separate.
+No mandatory per-game BYOK/ownership workflow follows from these library inputs.
+Deterministic PKCS#1 type-2 format is legacy and leaks equality; it is not authentic
+RSA signing or a recommendation for modern encryption. Existing secret-operation
+restriction under RUSTSEC-2023-0071 remains unchanged.

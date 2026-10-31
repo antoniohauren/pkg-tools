@@ -19,9 +19,19 @@ sources and narrow resource placement to that writer. These intermediate images 
 Signed/encrypted S32 outer images are now implemented as `outer_image::OuterImage`
 and library-only `PreparedProject::write_outer_new`, with explicit ready image key,
 independent HMAC/XTS/legacy derivation vectors and single/double-indirect checks.
-This does not supply licenses, PlayGo, RSA wrapping or container finalization;
-numeric-input provenance and full-PKG/hardware gates remain unresolved.
-No native PKG writer or remarry implementation. Native Rust, library-first,
+Separate `container` helpers now supply keyless PlayGo/digests, bounded final-record
+metadata CBC and deterministic public-RSA wrapping with explicit caller inputs;
+these do not supply licenses, authentic signing or complete container finalization.
+Numeric-input provenance and full-PKG/hardware gates remain unresolved.
+An experimental source-backed base rebuild is now available as `fpkg rebuild`
+and `ps4_pkg::rebuild::rebuild_new`; see the [source profile contract](fpkg-authoring-contract.md#source-backed-base-rebuild).
+It preserves original license/keystone/NP/trophy/application identity bytes while
+regenerating layout and digests. Narrow legacy and 2019 newcrypt sources produce
+fresh legacy destinations; unsupported records/settings fail, not disappear.
+Modern System/PlayGo/Trophy general digests and alternate MajorParam/Content
+recipes remain unsupported; the requested private source is rejected before
+scratch, not converted by dropping those checks.
+No directory/GP4-to-PKG writer or remarry implementation. Native Rust, library-first,
 Linux-first. Each stage has its own compatibility gate; readable output alone
 does not establish installability, launchability or save compatibility.
 

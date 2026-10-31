@@ -184,6 +184,191 @@ Source locations: L `PFS/{PfsProperties,PFSBuilder,FSTree,PFSCWriter,FlatPathTab
     verification are required for both; ordinary Rust RSA signing is not a drop-in
     replacement for the fake-header construction.
 
+### Base-container finalization and acceptance gates
+
+Native planning subset is implemented as
+`ps4_pkg::container::BaseContainerLayout::plan(outer_pfs_size, record_sizes)`.
+It reserves required generated records (including licenses), checks representable
+lengths/offsets, solves PlayGo SHA allocation, and exposes deterministic entry-table
+bytes and digest input/output ranges. Unit coverage includes >4-GiB image planning
+and SHA-driven body-alignment growth; an opt-in pinned-reference comparison checks
+the complete table/names/layout. The keyless generation follow-up below adds record
+and digest helpers; separate caller-input crypto helpers below add encoding, not a
+PKG writer/publication path. No frontend action
+or build command is added.
+
+#### Implemented caller-input metadata encryption and public wrapping (2026-10-31)
+
+`container::encrypt_metadata(final_record, content_id, passcode, plaintext)`
+accepts an exact 32-byte BE final record for IMAGE_KEY/`license.dat` (index 3) or
+`license.info` (index 2). It reuses `crypto::derived_key` for the exact D[index]
+chain above; never recovers/substitutes DK3. Requires valid profile content ID,
+32 printable ASCII passcode bytes, legacy encrypted flags, matching index,
+16-byte-aligned offset and zero reserved words. Buffers at most 1024 bytes.
+Plaintext must be nonempty and its 16-byte-rounded length must match the declared
+stored length; zero padding is encrypted, with no extra block when aligned.
+These are bounded record-encoding helpers, not license serializers/validators;
+caller must supply correct contents and profile lengths (256/1024/512 bytes).
+Generic nonaligned CBC/CFB-tail reading remains distinct and is not authored here.
+Any later offset/flag/size change requires re-encryption; entry hashes cover stored
+ciphertext including encrypted padding, not plaintext or inter-record alignment gaps.
+No streaming/new I/O, publication, per-game key configuration or ownership UI added.
+
+`container::public_rsa_wrap(modulus, exponent, message)` accepts only raw 256-byte
+BE modulus with 2048-bit width/odd value, raw exponent `01 00 01`, and 32-byte message.
+It validates the public key with existing `rsa` then uses its maintained `BigUint`
+public modular exponentiation; no new dependency/features or private operations.
+Seed MT19937 `init_by_array` with eight BE words from
+`SHA256(SHA256(modulus256 || message32))`; hash twelve BE MT outputs at a time,
+discard zero bytes, take 221 bytes. Encode `00 02 || padding221 || 00 || message32`,
+raise to exponent 65537 modulo n and left-pad result to exactly 256 bytes.
+Pinned L `Util/Crypto.cs:81-123` and `MersenneTwister.cs:26-85` establish this
+format. This public wrapping also underlies the **fake**, not authentic, header
+signature. No fixed package moduli or production key-loading surface supplied.
+Deterministic type-2 padding leaks equality and is unsuitable as modern generic
+secure encryption; existing RSA timing advisory does not approve secret signing.
+
+Rust known answers and byte-for-byte external checks cover padding, wrapping,
+index 2/3 CBC, changed final offset/flags, aligned/zero-padded plaintext and
+malformed/unsupported keys, lengths, records, indices and algorithms. Original
+disposable RSA pair's public half is test-only; private half discarded.
+Python uses its own built-in MT19937, hashlib, integer `pow` and OpenSSL AES;
+pinned L independently agrees on wrapping and all four CBC vectors.
+[Reproduction](../tests/reference/README.md#synthetic-container-crypto-vectors).
+Debug-RIF signing, complete ENTRY_KEYS/IMAGE_KEY serialization, automatic fake-header
+placement and full-container/publication/console acceptance remain unimplemented.
+
+#### Implemented keyless PlayGo/integrity subset (2026-10-31)
+
+`container::BaseContainerLayout::playgo_dat(content_id, inner_pfs_size)` generates
+all 416 bytes of the default DAT. Inner size must be nonzero, block-aligned and no
+larger than the outer image; it is the clear PFS size, never the raw PFSC length.
+The physical size comes from the final plan's whole package size. The caller must
+use the same content ID in SFO/header and reject custom labels/scheduling.
+`container::DEFAULT_PLAYGO_MANIFEST` provides default XML semantics with UTF-8/LF,
+not a transplanted reference BOM/CRLF template. Plan its exact byte length.
+
+`write_playgo_sha(source, output, cancelled)` streams one four-byte slot per package
+block to a separate, nonaliasing output at its current position. Pre-PFS slots are
+zero; PFS slots hash final stored blocks. Returns `PfsDigests { first_block, image }`.
+The source must be stable package-length scratch matching the immutable plan.
+`entry_digests` returns the small ID-indexed DIGESTS record with self slot zero;
+write it before `body_digests`, which returns body, digest-table and both SC hashes.
+Padding participates only in the body hash. Streaming buffers are bounded at 64 KiB;
+cancellation runs between reads (including short reads), blocks and output slots.
+Short EOF, wrong scratch length and I/O errors fail; discard partial SHA output.
+These helpers do not create, publish or roll back package scratch themselves.
+
+`general_digests(final_header, final_sfo)` returns the type-0x100, 0x180-byte record
+with Content/Game/Header/MajorParam/Param flags `0x6e`; System and remaining slots
+stay zero/unset, as in pinned L. It validates PS4/GD, SFO 1.1, ASCII text/integer
+types, `CATEGORY=gd` and content-ID agreement. Integers use lowercase eight-digit
+hex text. Param hashes the supplied **final serialized bytes**, without implicit
+reserialization or PUBTOOL changes. Final PFS/layout fields in the supplied header
+are caller responsibilities, not authenticated by this function. `header_digest`
+covers `[0,0xfe0)`; `signature_digest` first rejects a stale/missing header hash,
+then returns SHA256 of `[0,0x1000)` **only**, never an RSA signature.
+
+Tests compare these helpers against existing bounded pinned-L synthetic output,
+including every DAT byte, SHA slot, general slot and body/SC hash. Independent
+Python checks also validate a native opaque synthetic finalization, including
+manifest semantics. Opaque license/key/PFS bytes in that test are deliberate
+non-package sentinels, not fake working crypto. No complete PKG, installability,
+NP/trophy/general-PlayGo/Trophy/System digest semantics or update binding claimed.
+See [reference reproduction](../tests/reference/README.md#keyless-container-generation).
+
+Follow-up source audit 2026-10-31: clean pinned L checkout, specifically
+`PkgBuilder.cs:114-224,388-465`, `PkgWriter.cs:12-25`, `Pkg.cs:126-209`,
+`PlayGo/{ChunkDat,Manifest}.cs`, `Rif/LicenseDat.cs:15-79` and
+`SFO/ParamSfo.cs:294-309`. This section is an **implementation/acceptance contract**,
+not a claim that a full native writer exists or any distribution gate is cleared.
+
+**Smallest feasible complete candidate:** the base-only profile above, raw PFSC,
+legacy zero-seed outer S32, one default install chunk/scenario, explicit timestamp/
+passcode, prepared executable bytes, unchanged approved application resources and
+valid preserved keystone. No NP/trophy/custom PlayGo, arbitrary `sce_sys` resources,
+existing-title/save-preservation, update or remarry claims. Synthetic keystone/eboot
+sentinels remain structural-test inputs, never evidence of an installable profile.
+New-homebrew keystone generation is separate blocked work, not implicit fallback.
+Preserving a valid supplied keystone avoids generation but establishes neither
+permission to use it nor save compatibility.
+
+The [numeric-input gate](fpkg-authoring-provenance.md#follow-up-what-the-base-writer-gate-actually-permits)
+still blocks complete candidate emission: six additional wrapping moduli, debug-RIF
+AES/RSA material and generation constants lack established original authority and
+distribution review; writer use of existing inputs and secret-signing dependencies
+also need decisions. A local-input file/callback is not an approved bypass. Keyless
+layout/PlayGo/digest planning and synthetic crypto tests may proceed while that
+gate remains closed. Readiness must fail before package scratch/publication when
+required reviewed material or supported semantics are unavailable.
+
+#### Source-established finalization dependencies
+
+1. Freeze record IDs, names, counts, flags, final declared lengths/offsets and
+   SFO policy before entry encryption. Reserve bounded PlayGo SHA storage during
+   planning; derive its exact length from final package size and recheck alignment
+   until layout is stable. Require `sha_length == 4 * (package_size / 65536)`;
+   this profile's package size is a multiple of 65536. Do not copy L's estimation
+   heuristic as proof that reservation always fits. Reject entry/count/offset,
+   promote-size or table-length overflow before payload I/O.
+2. Finish signed/encrypted outer PFS. Generate the **416-byte LE PlayGo DAT**:
+   one image/chunk/microchunk/scenario; physical microchunk offset 0 and size final
+   **package** size; inner offset 0 and size clear **inner PFS**, not raw PFSC size.
+   DAT content ID must match header/SFO. L hardcodes `Chunk #0` / `Scenario #0` and
+   default manifest version `0990`; custom GP4 labels/settings must be honored by
+   an independently validated extension or refused, never silently lost. Compare
+   XML semantics, not reference CRLF/BOM/.NET encoding trivia.
+3. PlayGo SHA has one four-byte slot per package-relative 64-KiB block. Leave slots
+   before PFS zero; fill PFS slots with first four SHA256 bytes of final **stored**
+   blocks. Compute first-block/full-PFS digests over those same final stored bytes.
+4. General digests cover the finalized SFO/image/layout. MajorParam hashes ASCII
+   `ATTRIBUTE` + integer text, optional `ATTRIBUTE2` + integer text, `CATEGORY` +
+   category text, `FORMAT` + format text, `PUBTOOLVER` + integer text, no separators.
+   Integer text is lowercase `0x` plus eight lowercase hex digits, not decimal or
+   raw LE32. Reject missing/wrong-type required fields instead of guessing. Explicitly
+   decide/report PUBTOOL changes; pre-existing GP4 preflight does not validate every
+   one of these digest inputs. General HeaderDigest covers `[0,0x40)` followed by
+   `[0x400,0x480)`; it is distinct from final header hash at `0xfe0`.
+5. Write final container records, encrypting appropriate entries from their exact
+   final table records and D[2]/D[3]. Hash **stored ciphertext** at each record's
+   declared length into ascending-ID DIGESTS slots; skip self slot, leave it zero.
+   Body digest includes body alignment padding. SC aggregate 1 concatenates complete
+   ENTRY_KEYS, IMAGE_KEY, GENERAL_DIGESTS, METAS, DIGESTS in that order; aggregate 2
+   omits DIGESTS and uses only `sc_entry_count * 32` METAS bytes. Then write header,
+   hash `[0,0xfe0)`, write that digest and construct fake header over `[0,0x1000)`.
+6. Sync and verify completed scratch; revalidate sources before no-overwrite
+   publication. Any failure/cancellation discards unpublished scratch. Keep source
+   and destination-parent stability restrictions explicit; no hostile-mutation
+   sandbox or durable-publication guarantee beyond implemented filesystem behavior.
+
+Debug `license.dat`/`license.info` remain generated records in this reference
+profile. No-DLC entitlement does **not** remove `LicenseDat`'s AES/private-RSA calls.
+The historical install/run-fix commit also sets GD `SkuFlag=3`; omitting licenses,
+using dummy signing keys or zero secret material is a different unverified profile.
+
+#### Acceptance ladder (all pending for a complete native package)
+
+| Gate | Required pass evidence | Must not be substituted |
+| --- | --- | --- |
+| 0. Inputs/dependencies | Value/role-specific provenance and distribution decisions; preserved-vs-generated keystone policy; explicit review of secret RSA use under the existing advisory | Public availability, successful reference build, inherited reader approval or local-input plumbing |
+| 1. Native synthetic tests | Metadata CBC vectors with final-record IV derivation (including index 2 vs 3 and changed offset/flags); deterministic RSA independently decoded with original synthetic pair; malformed/missing fields; PlayGo sizes/labels; SHA-table growth across `0x80000` body-alignment boundaries; overflow, cancellation, short I/O, source mutation, aliases/races and no-overwrite cleanup | Same-code encrypt/decrypt round trip alone or layout arithmetic without boundary tests |
+| 2. Independent complete output | Pinned L reader/validator and separate Python/keyless digest calculations; expected check names present, every emitted result Ok; independently decoded wrapping/padding and debug-RIF verification; all outer referenced block HMACs, PFSC/inner namespace and every payload byte match; DAT/XML and every PlayGo SHA slot agree with final layout | “27 checks passed”, native reader success, NoKey, unset/unknown general digests silently skipped, or upstream-reference output tested instead of native output |
+| 3. Corruption/failure | Mutate header, table, encrypted license, stored resource, PlayGo slot, PFS ciphertext and signed plaintext padding in disposable synthetic copies; each responsible independent check fails; failure leaves originals/existing outputs intact and no published partial package | Assuming full-PFS SHA mismatch proves every individual HMAC or PlayGo relationship was verified |
+| 4. Test-PS4 base acceptance | User-operated isolated test with permitted runnable homebrew: record writer/reference versions, firmware, payload environment and install method; install, launch recognizable build marker, exit/relaunch, create/load new save, reboot and relaunch/load again. Record exact outcomes privately; never upload keys, passcodes or package fingerprints | Non-executable sentinel, emulator listing, tool success, another project's historical install/run claim, or installation without launch |
+| 5. Separate rebuild/scale claims | Permitted original/rebuilt base, source payload comparison and backed-up old-save load test before claiming existing-title/save compatibility; actual >4-GiB file/offset readback with bounded memory/scratch observation before large-file support | Fresh new save, synthetic sentinels, prefix-only large-offset tests or unrelated extraction corpus |
+
+Gate 4 requires human hardware access and consent; do not transfer/install packages
+automatically or uninstall an existing title. Use a disposable test identity and
+back up saves before any user-approved replacement/reinstall procedure. Failures
+record installer/launch errors and phase, not a guessed crypto diagnosis. Hardware
+pass is specific to the tested base/profile/environment; NP/trophy, old saves,
+updates/remarry, custom PlayGo and minimum-firmware support remain separate gates.
+
+L's validator (`PkgValidator.cs:144-182,302-313`) skips unknown/unset general
+digests and reports a fake-header mismatch as `NoKey`; neither is a pass. It does
+not validate PlayGo relationships or every PFS block HMAC. F also leaves ICV checks
+TODO. The independent acceptance harness must name these coverage gaps explicitly.
+
 ## 2. Metadata ownership and rebuild readiness
 
 **Policy:** separate application tree from authoring inventory. Do not expand or
@@ -196,7 +381,7 @@ must inventory container resources and reject unknown required records.
 | SFO game identity, category, versions, attributes, firmware, unknown fields/types/capacities | Preserve | Preserve `gp` and update version; reject mismatched title/content IDs | `psf::parse` retains used bytes/padding; `psf::serialize` preserves semantics for SFO 1.1. No general edit API/UI. |
 | `PUBTOOLINFO`, `PUBTOOLVER` | Regenerate only with documented build summary | Same, after binding recipe is known | L `PkgBuilder.cs:319-344` sets date/time/image-size info and `0x02890000`; not a firmware-backport operation. Exact values are reference-profile choices pending oracle tests. |
 | Base `sce_sys/keystone` | Preserve byte-for-byte for existing games; missing is error | No synthesized/base-only keystone copied into update; unexpected update keystone blocks preflight pending explanation | L `PfsProperties.MakeInnerPFSProps`, `Crypto.CreateKeystone`. New homebrew generation requires explicit policy, not silent replacement. |
-| `nptitle.dat` (`0x402`), `npbind.dat` (`0x403`) | Preserve/inventory outside normal extraction | Preserve update resources; do not substitute base's whole `sce_sys` | F `src/pkg.c` entry map; L enums. Current extraction drops IDs below `0x1000`. Necessity/validation and rebuild placement need dedicated NP research; never classify these as disposable digests. |
+| `nptitle.dat` (`0x402`), `npbind.dat` (`0x403`) | Preserve exact opaque resources; map into normal `sce_sys` extraction and retain container placement on supported rebuild | Preserve update resources; do not substitute base's whole `sce_sys` | F `src/pkg.c` entry map; L enums. Supported source-backed profile checks paired flags/lengths and padded storage; no NP identity generation or runtime compatibility claim. |
 | Trophy TRPs, localized assets, icons, sound, manuals, save/share resources | Preserve correct source bytes | Preserve update-owned resources and associations | `metadata_name` in `extract.rs`; nested metadata relocation must be explicit. No trophy authoring or invented NP identity. |
 | Runtime PlayGo DAT/SHA/XML and `sce_sys/app/` variants | Regenerate layout-dependent records for chosen single-chunk profile | Regenerate only when update contract established | Extraction intentionally preserves these bytes. L's creator skips generated records, while builder unconditionally generates GD defaults: reject unsupported custom PlayGo rather than claim faithful rebuild. |
 | Keys, licenses, general/table/body/header digests, fake signatures, PFS/PFSC internals | Regenerate for output identity/layout | Regenerate, with verified selected-base binding | Not application files; copying stale values cannot validate a rebuild. Unknown imageinfo/selfinfo/other records must be classified or rejected, not blindly zeroed. |
@@ -482,10 +667,11 @@ bytes. Both executed on single-/double-indirect native outputs (patterned file s
 cancellation, I/O errors, scratch cleanup, output race and GP4 excluded-source mutation.
 Python may buffer entire bounded synthetic output; native writer does not.
 
-Unresolved: metadata-encryption writer vectors, deterministic RSA encoder/fake-header
-and debug-RIF vectors; six additional package public moduli/debug-RIF/keystone input
+Metadata CBC and synthetic deterministic public-RSA vectors now pass as documented
+above. Unresolved: integrated fake-header and debug-RIF vectors;
+six additional package public moduli/debug-RIF/keystone input
 provenance/distribution and writer-use decision for existing DK3-derived fake-header
-modulus; homebrew keystone generation; licenses/PlayGo/container/final validation;
+modulus; homebrew keystone generation; licenses/complete container/final validation;
 NP/trophy placement and update binding/remarry. No new fixed constants approved.
 Reader still checks header HMAC only, not every traversed signed block; independent
 oracle establishes emitted HMAC correctness, not native readback alone.
@@ -719,6 +905,66 @@ signed/encrypted outer PFS and hash dependencies; licenses, PlayGo and container
 records/finalization; completed-output validation; real large-file, independent
 full-package and installation/launch/save tests. Base only; updates/remarry unchanged.
 
+## Source-backed base rebuild
+
+Unix `rebuild::rebuild_new` and CLI `fpkg rebuild INPUT.pkg NEW_OUTPUT.pkg` are
+separate from directory/GP4 authoring. Only GD bases, default 416-byte single-chunk
+PlayGo DAT/XML, S32 encrypted outer/PFSC/D32 inner images are supported. Source
+PFSC may use existing supported compression; destination PFSC uses raw blocks.
+Known 32-byte printable-ASCII passcode must verify all seven ENTRY_KEYS digests.
+No argument tries only ASCII zeros, not recovery/search. Existing source and output
+bytes are never replaced; no transfer or installation occurs.
+
+Named source profiles: legacy header flags `1`, PFS `0x80000000000003cc`; 2019
+newcrypt header flags `0x40000001`, PFS `0xa0000000000003cc`, version date/hash
+`0x20190801/0x0ea8a9bd`, cache `0x120000`. All other fixed header bytes and all
+container digests/fake-header bytes are checked, not accepted by masking flags.
+These flag pairs alone do not establish source support: only the independently
+verified canonical general-digest recipe is accepted. The requested private 2019
+source passed passcode/newcrypt-key, stored-record and PFS/PlayGo hash checks but
+uses populated System/PlayGo/Trophy slots and different MajorParam/Content recipes.
+Those algorithms are not established by pinned L's five-digest writer. It remains
+**unsupported, rejected before scratch/publication**, with no target artifact.
+Default PlayGo header versions 0 and 0x3000/minor 0 are recognized; version 0x3000
+retains its SDK header field verbatim. F `src/playgo.c:101-110,223-228` identifies
+those fields separately from scheduling. Entire remaining default DAT must match
+after substituting verified source package/decoded-inner sizes. Output preserves
+version/SDK metadata and regenerates sizes, never erases custom scheduling.
+Source physical application-record order may differ from destination; source
+table/name boundaries, expected identities/flags/lengths, nonoverlap/alignment,
+complete stored-record digests, body/SC/header/general/PFS/PlayGo hashes are checked.
+
+For newcrypt, recovered ready IMAGE_KEY must equal `HMAC-SHA256(D[1], source_seed)`;
+the ready key is used directly for source PFS, never transformed twice. Pinned F
+`src/keymgr.c:453-475` establishes this distinction. Destination is independently
+rebuilt as legacy D[1], zero seed and legacy header flags. IMAGE_KEY is freshly
+wrapped for that key; source-bound licenses and NP plaintext are unchanged and
+re-encrypted against exact final entry records. No license/identity generation.
+
+Preserved: exact SFO/ENTRY_KEYS/licenses/96-byte keystone/application files and
+directories; paired `0x402` (0xa0)/`0x403` (0x214), trophy00 `0x1400`, supported
+pronunciation/save/artwork/changeinfo resources. NP records have empty container
+names and map into `sce_sys/nptitle.dat`/`npbind.dat` on readback. Source-confirmed
+binding record `0x403` has **0x220 stored/hash-covered CBC bytes**, with twelve
+zero plaintext padding bytes validated, despite declared 0x214. This exact named
+exception is not generic CFB-tail storage. Resource limits: 16 MiB each, 64 MiB
+aggregate; unknown container IDs and other trophy variants remain unsupported.
+Actual inner files retain inner placement; container resources retain container
+placement. PlayGo alone is regenerated; every other decoded byte is compared.
+
+One private output-sized scratch file; bounded payload buffers, cancellation and
+scratch cleanup; repeated whole-source digest/stability checks before publication;
+hard-link publication refuses existing destinations. Parent/source stability is
+required, not a concurrent-adversary snapshot guarantee. Output timestamps are
+deterministic zero; SFO/PUBTOOL bytes are not edited.
+
+Executed synthetic checks include unchanged legacy acceptance, independently
+assembled nonzero-seed newcrypt input with paired padded NP records and all added
+resources, native legacy output, independent full-record/digest/PFS HMAC checks,
+and source-preserving failure/cancellation/no-overwrite tests. These are opaque
+synthetic sentinels, not real NP/trophy identity validation. Console installation,
+launch, old-save compatibility, NP services and trophies remain unverified.
+
 ## 6. Smallest implementation sequence and exit status
 
 1. **Implemented: minimal `psf::serialize(&Sfo)` with synthetic tests**, no PKG writer/CLI changes.
@@ -738,7 +984,7 @@ full-package and installation/launch/save tests. Base only; updates/remarry unch
    independent round-trip oracle; patch builds stay unsupported until binding works.
 3. **Implemented: authoring-only bounded package metadata inventory/preflight**,
    including NP records, original keystone and full raw header/general digests.
-   `Game` application mapping, extraction and ZAR behavior remain unchanged;
+    `Game` application mapping now also retains NP files under `sce_sys`;
    synthetic record/key-index refusal tests pass. This is not complete semantic
    rebuild validation; independent package-source comparisons remain unexecuted.
 4. Synthetic base-build/structural oracle is now executed. **Clear D32/raw-PFSC

@@ -68,7 +68,7 @@ write_new}`. Preflight explicitly approves one source root and inventories every
 absolute/external reference. Updates/remaster/delta, custom PlayGo and unknown
 build settings are rejected. [Exact subset and safety limits](docs/fpkg-authoring-contract.md#4-initial-gp4-subset).
 Pinned synthetic GP4 load/tree/write/native-reparse checks pass; no package-build
-or console compatibility follows. No GP4 GTK actions or native PS4 PKG writer.
+or console compatibility follows. No GP4 GTK actions or directory/GP4-to-PKG writer.
 
 `gp4 preflight` is a read-only authoring inventory, **not a build**. It reports
 approved source references, sizes, resource roles and input/global build blockers;
@@ -127,8 +127,55 @@ image key (`outer_image::legacy_image_key(content_id, passcode)` derives one);
 only `.pfs`, never `.pkg`. No new fixed crypto keys or production dependencies.
 Single/double-indirect synthetic images pass external LibOrbisPkg and Python/OpenSSL
 all-reference integrity/payload checks. Container resources remain excluded;
-licensing/PlayGo/container emission and full crypto provenance remain blocked.
+licensing/complete container emission and full crypto provenance remain blocked.
 [Contract and vectors](docs/fpkg-authoring-contract.md#native-signedencrypted-outer-image-2026-10-31).
+
+**Base-container helpers (library only):** `container::BaseContainerLayout::plan`
+reserves required base records, computes aligned offsets and the package-relative
+PlayGo SHA table, and exposes final entry-table bytes and integrity ranges.
+`playgo_dat` generates the default 416-byte record; `DEFAULT_PLAYGO_MANIFEST`
+supplies the one-scenario XML. Streamed `write_playgo_sha` returns stored-PFS hashes;
+`entry_digests`, `body_digests`, `general_digests`, `header_digest` and
+`signature_digest` cover the supported keyless finalization inputs.
+`encrypt_metadata` adds bounded legacy CBC for final-record-bound IMAGE_KEY,
+license.dat (D[3]) and license.info (D[2]); `public_rsa_wrap` implements deterministic
+public RSA-2048 wrapping with explicit raw public inputs, not authentic signing.
+Synthetic padding/CBC/wrapping bytes match independent Python and pinned reference.
+No SFO/PUBTOOL edits, fixed authoring keys, license generation or PKG writer. Inputs must be final,
+stable scratch bytes; partial SHA output must be discarded on failure.
+Synthetic pinned-reference comparisons and independent Python checks are in the
+[reference checks](tests/reference/README.md). Crypto provenance, license generation
+and complete finalization remain blocked; no `build-fpkg` command exists.
+
+## Source-backed PS4 base rebuild (experimental, Unix)
+
+```sh
+cargo run --release -p pkg-cli -- fpkg rebuild INPUT.pkg NEW_OUTPUT.pkg
+# Optional known passcode instead of the verified ASCII-zero candidate:
+cargo run --release -p pkg-cli -- fpkg rebuild INPUT.pkg NEW_OUTPUT.pkg --passcode-file /private/passcode.txt
+```
+
+Library: `ps4_pkg::rebuild::rebuild_new(source, destination, passcode, cancelled)`;
+shared frontend operation: `pkg_ops::rebuild_ps4`. Sources and existing outputs
+remain untouched. One destination-sized scratch file, bounded 64-KiB payload I/O,
+multiple full-source validation scans, no-overwrite hard-link publication. Keep
+source/output parents stable; this is not a hostile concurrent-mutation sandbox.
+
+Accepts narrowly checked legacy and 2019 newcrypt GD base sources with default
+single-chunk PlayGo. Newcrypt ready source keys are verified against passcode and
+seed; destination uses fresh legacy D[1]/zero-seed images, never copied source
+flags. Preserves original SFO, ENTRY_KEYS, licenses, keystone, every application
+file, paired NP records, trophy00 and supported pronunciation/save/artwork/changeinfo
+resources. Encrypted NP binding storage includes its validated zero padding.
+Sources must use the verified canonical general-digest recipe; modern System/
+PlayGo/Trophy slots and alternate MajorParam/Content recipes remain unsupported.
+Unknown container records, other trophy variants, custom PlayGo and updates fail
+explicitly. Reopens and compares every retained application/resource byte before
+publication. No new licenses, NP identity, keystones or authentic signatures.
+
+Synthetic independent reader/digest/all-block-HMAC checks are documented in
+[reference checks](tests/reference/README.md). **No console installation, launch,
+save, NP-service or trophy compatibility claim.** No transfer/install is performed.
 
 ## GNOME application
 
