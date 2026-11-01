@@ -30,8 +30,11 @@ and does not decode nested SELF/EDAT/SDAT payloads.
 ## Supported boundary
 
 - Entry kinds: NPDRM `1`, NPDRM EDAT `2`, regular `3`, directory `4`, SDAT `9`.
-  The only accepted high flag is `0x80000000`. Unknown kinds/flags and nonzero
-  record padding are rejected before output creation.
+  Accepted flags are overwrite `0x80000000` and, only for NPDRM kind `1`,
+  observed compatibility bit `0x100`. Both are retained without changing container
+  decoding; the meaning of `0x100` is not established. Pinned RPCS3 logs this bit
+  as unknown but extracts by low-byte kind with the normal key. Other unknown
+  kinds/flags and nonzero record padding are rejected before output creation.
 - Output preserves package-relative names and container-decrypted bytes.
   `PARAM.SFO`, `ICON0.PNG` and `USRDIR` stay at their original locations;
   no title-ID wrapper or `sce_sys` remapping is added.
@@ -188,6 +191,12 @@ PS3 AES key is a fixed format constant from that reference.
   Extracted tree and private manifest: ignored `pkgs/ps3/{extracted,reference.json}`.
 - Debug: synthetic-only coverage. Python/hashlib-created fixture exercises CLI
   JSON/human inspection, SFO, extraction, no-overwrite and GUI metadata loading.
+- Additional retail fixture (2026-11-01): supplied Limbo package with NPDRM
+  flags `0x80000101` now opens and extracts. All 296 files and 54 directories,
+  header, metadata, SFO, sizes and full payload SHA-256 matched the independent
+  Python/OpenSSL oracle. Synthetic retail/debug checks cover compatibility-bit
+  preservation, extraction, liberation, and rejection on other kinds or with
+  PSP/unknown flags or nonzero padding. No console/emulator check follows.
 - Rust tests cover retail/debug known answers, unaligned seeks, 64 KiB boundaries,
   virtual >4 GiB files/offsets, malformed/truncated/overflowed ranges, unsupported
   flags/platforms, traversal/collisions, symlink destinations, progress,

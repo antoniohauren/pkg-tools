@@ -21,6 +21,8 @@ use std::{
 
 pub const MAX_ENTRIES: u32 = 1_000_000;
 const MAX_METADATA: u64 = 16 * 1024 * 1024;
+// Observed on NPDRM entries; RPCS3 preserves it without changing container decoding.
+const NPDRM_COMPAT_FLAG: u32 = 0x100;
 // Normal PS3 release key: pinned RPCS3 Crypto/key_vault.h (see docs/ps3.md).
 const RETAIL_KEY: [u8; 16] = [
     0x2e, 0x7b, 0x71, 0xd7, 0xc9, 0xc9, 0xa1, 0x4e, 0xa3, 0x22, 0x1f, 0x18, 0x88, 0x28, 0xb8, 0xf8,
@@ -301,12 +303,17 @@ impl<R: Read + Seek> Package<R> {
                     "entry name length (or unsupported keyset)",
                 ));
             }
-            if flags & !0x8000_00ff != 0
+            let compat_flags = if flags & 0xff == 1 {
+                NPDRM_COMPAT_FLAG
+            } else {
+                0
+            };
+            if flags & !(0x8000_00ff | compat_flags) != 0
                 || !matches!(flags & 0xff, 1..=4 | 9)
                 || be32(&record, 28) != 0
             {
                 return Err(Error::Unsupported(
-                    "entry kind/flags/padding (PSP and IDU are unsupported)",
+                    "unknown entry kind/flags or nonzero padding (damaged input or unsupported variant)",
                 ));
             }
             range(offset, size, self.header.data_size)?;

@@ -100,6 +100,28 @@ fn liberation_publication_cancel_and_no_overwrite() {
         .unwrap();
     assert_eq!(be32(&header, 8), 3);
     let saved = fs::read(&output).unwrap();
+    let flagged_output = root.join("flagged.pkg");
+    let mut flagged = package();
+    flagged
+        .entries
+        .iter_mut()
+        .find(|e| e.path() == "USRDIR/raw")
+        .unwrap()
+        .flags = 0x8000_0101;
+    flagged
+        .liberate_with_progress(&rap, &flagged_output, || false, |_, _| {})
+        .unwrap();
+    let flagged = Package::open(fs::File::open(&flagged_output).unwrap()).unwrap();
+    assert_eq!(
+        flagged
+            .entries()
+            .iter()
+            .find(|e| e.path() == "USRDIR/raw")
+            .unwrap()
+            .flags(),
+        0x8000_0101
+    );
+    fs::remove_file(flagged_output).unwrap();
     assert!(
         package()
             .liberate_with_progress(&rap, &output, || false, |_, _| {})
@@ -401,6 +423,30 @@ fn retail_debug_trees_metadata_and_seek() {
 }
 
 #[test]
+fn npdrm_compat_flag_preserves_flags_and_payload() {
+    for release in [0, 0x8000] {
+        for flags in [0x101, 0x8000_0101] {
+            let payload = b"synthetic executable payload";
+            let bytes = fixture(release, &[("USRDIR/EBOOT.BIN", flags, payload)]);
+            let mut pkg = Package::open(Cursor::new(bytes)).unwrap();
+            let index = pkg
+                .entries()
+                .iter()
+                .position(|e| e.path() == "USRDIR/EBOOT.BIN")
+                .unwrap();
+            assert_eq!(pkg.entries()[index].flags(), flags);
+            assert_eq!(pkg.entries()[index].kind(), FileKind::File);
+            let mut actual = Vec::new();
+            pkg.read_entry(index)
+                .unwrap()
+                .read_to_end(&mut actual)
+                .unwrap();
+            assert_eq!(actual, payload);
+        }
+    }
+}
+
+#[test]
 fn rejects_malformed_tables_variants_and_unsafe_paths() {
     for name in [
         "",
@@ -437,13 +483,23 @@ fn rejects_malformed_tables_variants_and_unsafe_paths() {
             .is_err()
         );
     }
-    for flags in [5, 6, 0x10000003, 0x10003, 0xff] {
+    for flags in [
+        5, 6, 0x10000003, 0x10000101, 0x10003, 0x201, 0x102, 0x103, 0x104, 0x109, 0xff,
+    ] {
         assert!(matches!(
             Package::open(Cursor::new(fixture(0, &[("file", flags, b"x")]))),
             Err(Error::Unsupported(_))
         ));
     }
     let original = fixture(0, &[("file", 3, b"hello")]);
+    let mut bad_padding = fixture(0, &[("USRDIR/EBOOT.BIN", 0x8000_0101, b"hello")]);
+    cipher(0).crypt(0, &mut bad_padding[0xc0..]);
+    put32(&mut bad_padding, 0xc0 + 28, 1);
+    cipher(0).crypt(0, &mut bad_padding[0xc0..]);
+    assert!(matches!(
+        Package::open(Cursor::new(bad_padding)),
+        Err(Error::Unsupported(_))
+    ));
     for len in [0, 4, 0xbf, original.len() - 1] {
         assert!(Package::open(Cursor::new(original[..len].to_vec())).is_err());
     }
@@ -480,7 +536,10 @@ fn safe_extraction_progress_cancellation_and_read_failure() {
     let root = std::env::temp_dir().join(format!("ps3-extract-test-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     let data = vec![42; 131089];
-    let bytes = fixture(0x8000, &[("USRDIR/file", 9, &data), ("empty", 1, b"")]);
+    let bytes = fixture(
+        0x8000,
+        &[("USRDIR/file", 0x8000_0101, &data), ("empty", 1, b"")],
+    );
     let mut pkg = Package::open(Cursor::new(bytes)).unwrap();
     let out = root.join("good");
     let mut updates = Vec::new();

@@ -86,7 +86,8 @@ def compare(package, output, cli):
             name = exact(decoded, name_size).rstrip(b"\0").decode("ascii")
             path = Path(name)
             assert not path.is_absolute() and all(p not in (".", "..") for p in name.split("/"))
-            assert pad == 0 and flags & ~0x800000ff == 0
+            allowed_flags = 0x800000ff | (0x100 if flags & 255 == 1 else 0)
+            assert pad == 0 and flags & ~allowed_flags == 0
             assert (flags & 255) in (1, 2, 3, 4, 9)
             entry = cli_entries[name]
             assert (entry["offset"], entry["size"], entry["flags"]) == (offset, size, flags)
