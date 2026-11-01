@@ -27,10 +27,13 @@ pub(crate) fn convert(
         ));
     }
     let version = u32_at(b, 4)?;
+    if version == 2 && flags != 0x0c {
+        return Err(Error::Unsupported("EDAT version 2 flags (supported: 0x0C)"));
+    }
     let wrap = match version {
-        3 => hex("be959ca8308defa2e5e180c63712a9ae"),
+        2 | 3 => hex("be959ca8308defa2e5e180c63712a9ae"),
         4 => hex("4ca9c14b01c95309969bec68aa0bc081"),
-        _ => return Err(Error::Unsupported("EDAT version (supported: 3, 4)")),
+        _ => return Err(Error::Unsupported("EDAT version (supported: 2, 3, 4)")),
     };
     let header_key = aes(&wrap, rap.key, true);
     if cmac(&header_key, &b[..0xa0]) != b[0xa0..0xb0] {
@@ -145,10 +148,10 @@ pub(crate) fn convert(
     let hash = cmac(&key, &out[..0xa0]);
     out[0xa0..0xb0].copy_from_slice(&hash);
     // Common EDAT uses CMAC authentication; PS2/disc-bound signature formats are rejected.
-    out.extend_from_slice(if version == 3 {
-        b"EDATA 3.3.0.W\0\0\0"
-    } else {
-        b"EDATA 4.0.0.W\0\0\0"
+    out.extend_from_slice(match version {
+        2 => b"EDATA 2.4.0.W\0\0\0",
+        3 => b"EDATA 3.3.0.W\0\0\0",
+        _ => b"EDATA 4.0.0.W\0\0\0",
     });
     Ok(Some(out))
 }

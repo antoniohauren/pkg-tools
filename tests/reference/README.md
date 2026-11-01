@@ -645,12 +645,17 @@ No game data is required. See [results and reader limits](../../docs/zarchive.md
 source PKG, its RAP, and the converted PKG:
 
 ```sh
+python3 tests/reference/test-ps3-liberation.py
 python3 tests/reference/ps3-liberation.py SOURCE.pkg LICENSE.rap OUTPUT.pkg \
   target/release/pkg-tools
 ```
 
-Checks transformed SELF sections/HMACs and the new header ECDSA signature;
-transformed EDAT plaintext and hashes; package paths/content ID; unchanged
+Synthetic checks cover auxiliary classification and rejection boundaries.
+The oracle checks decoded SELF sections/HMACs and the new header ECDSA signature;
+opaque non-runtime auxiliary payloads and section tables, descriptors and hash
+records remain byte-for-byte unchanged and are excluded from developer-key
+discovery. An unverified table never authorizes another payload's HMAC exemption.
+Checks also cover transformed EDAT plaintext and hashes; package paths/content ID; unchanged
 file sizes and first/last 64 KiB. Large unchanged files are sampled, not fully
 hashed. Developer-key scanning can take several minutes in Python. No emulator
 or console launch is performed. Fixtures and generated packages stay ignored.

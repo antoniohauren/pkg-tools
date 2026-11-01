@@ -10,6 +10,11 @@ use std::{
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
+/// Header-only check; a positive result does not establish conversion support or RAP validity.
+pub fn folder_needs_liberation(source: &Path, cancel: impl Fn() -> bool) -> Result<bool, Error> {
+    folder_source(source, [0; 48], &cancel)?.needs_liberation(&cancel)
+}
+
 /// Liberate an extracted game tree into a new PKG. The source must remain unchanged.
 pub fn liberate_folder_with_progress(
     source: &Path,
@@ -206,6 +211,11 @@ fn debug_crypt(qa: &[u8; 16], offset: u64, bytes: &mut [u8]) {
 }
 
 impl<R: Read + Seek> Package<R> {
+    /// Header-only check; a positive result does not establish conversion support or RAP validity.
+    pub fn needs_liberation(&mut self, cancel: impl Fn() -> bool) -> Result<bool, Error> {
+        LiberationSource::needs_liberation(self, &cancel)
+    }
+
     pub fn liberate_with_progress(
         &mut self,
         rap: &Rap,
@@ -233,6 +243,37 @@ trait LiberationSource {
     fn metadata(&self) -> &[crate::Metadata];
     fn content_id(&self) -> [u8; 48];
     fn read_entry(&mut self, index: usize) -> Result<Box<dyn Read + '_>, Error>;
+
+    fn needs_liberation(&mut self, cancel: &impl Fn() -> bool) -> Result<bool, Error> {
+        for index in 0..self.entries().len() {
+            cancelled(cancel)?;
+            if self.entries()[index].kind() == FileKind::Directory
+                || self.entries()[index].size() < 4
+            {
+                continue;
+            }
+            let mut magic = [0; 4];
+            self.read_entry(index)?.read_exact(&mut magic)?;
+            match &magic {
+                b"SCE\0" => {
+                    if npdrm::needs_license_conversion(self.read_entry(index)?)? {
+                        return Ok(true);
+                    }
+                }
+                b"NPD\0" => {
+                    let mut header = [0; 0x90];
+                    self.read_entry(index)?.read_exact(&mut header)?;
+                    if crate::be32(&header, 0x80) & 0x01000000 == 0 && crate::be32(&header, 8) != 3
+                    {
+                        return Ok(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+        cancelled(cancel)?;
+        Ok(false)
+    }
 
     /// Convert supported local-license NPDRM payloads to free-license payloads
     /// and write a new folder or debug PKG. Sources and existing outputs are never replaced.
@@ -334,7 +375,7 @@ trait LiberationSource {
         }
         if replacements.is_empty() {
             return Err(Error::Unsupported(
-                "no convertible local-license SELF/EDAT payloads",
+                "no convertible local-license SELF/EDAT payloads; already-free payloads need no RAP conversion. Liberate does not unlock trials or supply missing full-game content/unlock packages",
             ));
         }
         drop(sections);

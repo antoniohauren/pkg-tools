@@ -4,7 +4,10 @@
 
 mod liberate;
 mod npdrm;
-pub use liberate::{liberate_folder_to_directory_with_progress, liberate_folder_with_progress};
+pub use liberate::{
+    folder_needs_liberation, liberate_folder_to_directory_with_progress,
+    liberate_folder_with_progress,
+};
 pub use npdrm::{Rap, self_content_id};
 
 use aes::{

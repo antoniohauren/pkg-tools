@@ -50,4 +50,5 @@ impl Rap {
 
 pub(crate) use edat::convert as convert_edat;
 pub(crate) use self_file::convert as convert_self;
+pub(crate) use self_file::needs_license_conversion;
 pub use self_file::self_content_id;

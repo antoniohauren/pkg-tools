@@ -59,6 +59,21 @@ pub fn liberation_content_id(source: &Path) -> Result<String, String> {
     Ok(String::from_utf8(id.to_vec()).unwrap())
 }
 
+/// Check payload headers before asking for a RAP; this does not validate conversion support.
+pub fn needs_liberation(source: &Path) -> Result<bool, String> {
+    if source.is_dir() {
+        ps3_pkg::folder_needs_liberation(source, || false).map_err(|e| e.to_string())
+    } else {
+        let mut package = ps3_pkg::Package::open(BufReader::new(
+            File::open(source).map_err(|e| e.to_string())?,
+        ))
+        .map_err(|e| e.to_string())?;
+        package
+            .needs_liberation(|| false)
+            .map_err(|e| e.to_string())
+    }
+}
+
 pub fn find_rap(source: &Path, content_id: &str) -> Result<Option<PathBuf>, String> {
     let parent = source
         .parent()

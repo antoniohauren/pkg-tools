@@ -542,13 +542,27 @@ impl Ui {
             };
             let input = source.clone();
             let result = gio::spawn_blocking(move || {
+                if !pkg_ops::liberate::needs_liberation(&input)? {
+                    return Ok(None);
+                }
                 let id = pkg_ops::liberate::liberation_content_id(&input)?;
                 let rap = pkg_ops::liberate::find_rap(&input, &id);
-                Ok::<_, String>((id, rap))
+                Ok::<_, String>(Some((id, rap)))
             })
             .await;
             let (id, detected) = match result {
-                Ok(Ok(value)) => value,
+                Ok(Ok(Some(value))) => value,
+                Ok(Ok(None)) => {
+                    ui.busy(false, "");
+                    let dialog = adw::AlertDialog::builder()
+                        .heading("No RAP Conversion Needed")
+                        .body("No payloads requiring RAP conversion were found. Already-free payloads need no liberation. This does not mean a trial is the full game: Liberate does not unlock trials or supply missing full-game content or unlock packages.")
+                        .build();
+                    dialog.add_response("close", "Close");
+                    dialog.set_close_response("close");
+                    dialog.present(ui.window.upgrade().as_ref());
+                    return;
+                }
                 other => {
                     ui.busy(false, "");
                     let error = match other {
@@ -1682,12 +1696,22 @@ mod tests {
                 .unwrap()
                 .downcast::<adw::AlertDialog>()
                 .unwrap();
-            assert_eq!(rap_dialog.heading().as_deref(), Some("Liberate — Link RAP"));
-            let width = rap_dialog.child().unwrap().width();
-            assert!(
-                width >= 600,
-                "Link RAP rendered width: {width}, expected at least 600"
-            );
+            if pkg_ops::liberate::needs_liberation(std::path::Path::new(&path)).unwrap() {
+                assert_eq!(rap_dialog.heading().as_deref(), Some("Liberate — Link RAP"));
+                let width = rap_dialog.child().unwrap().width();
+                assert!(
+                    width >= 600,
+                    "Link RAP rendered width: {width}, expected at least 600"
+                );
+            } else {
+                assert_eq!(
+                    rap_dialog.heading().as_deref(),
+                    Some("No RAP Conversion Needed")
+                );
+                assert!(rap_dialog.body().contains("does not unlock trials"));
+                assert!(!ui.busy.get());
+                assert!(ui.rap.borrow().is_none());
+            }
             rap_dialog.close();
             while ui.busy.get() {
                 context.iteration(true);

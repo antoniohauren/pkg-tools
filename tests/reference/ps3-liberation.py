@@ -27,6 +27,7 @@ OMAC2 = hx('6ba52976efda16ef3c339fb2971e256b')
 OMAC3 = hx('9b515feacf75064981aa604d91a54e97')
 KLIC = hx('f2fbca7a75b04edc1390638ccdfdd1ee')
 ROOTS = {
+    1: ('f9edd0301f770fabba8863d9897f0fea6551b09431f61312654e28f43533ea6b', 'a551ccb4a42c37a734a2b4f9657d5540'),
     10: ('03c21ad78fbb6a3d425e9aab1298f9fd70e29fd4e6e3a3c151205da50c413de4', '0a99d4d4f8301a88052d714ad2fb565e'),
     25: ('fbda75963fe690cff35b7aa7b408cf631744edef5f7931a04d58fd6a921ffdb3', 'f72c1d80ffda2e3bf085f4133e6d2805'),
     28: ('8103ea9db790578219c4cedf0592b43064a7d98b601b6c7bc45108c4047aa80f', '246f4b8328be6a2d394ede20479247c5'),
@@ -155,6 +156,93 @@ def verify_signature(header, mh):
     assert add(mul(z*w % n, g), mul(r*w % n, q))[0] % n == r
 
 
+def opaque_self_sections(data, header, records, verify_table):
+    """Recognize non-runtime ELF data without treating its bytes as key material."""
+    def bounded(start, size, limit):
+        assert 0 <= start <= limit and 0 <= size <= limit-start
+        return start, start+size
+
+    def overlaps(a, b):
+        return a[0] < a[1] and b[0] < b[1] and a[0] < b[1] and b[0] < a[1]
+
+    if not any(integer(s, 16) in (2, 3) for s in records):
+        return set()
+    elf = integer(header, 48, 8)
+    plain_end = integer(header, 12)+32
+    bounded(elf, 64, plain_end)
+    e = header[elf:elf+64]
+    if (elf < 104 or e[:7] != b'\x7fELF\x02\x02\x01'
+            or integer(e, 16, 2) != 2 or integer(e, 18, 2) != 21
+            or integer(e, 20) != 1 or integer(e, 52, 2) != 64):
+        return set()
+    phnum, shnum = integer(e, 56, 2), integer(e, 60, 2)
+    if (integer(e, 54, 2) != 56 or integer(e, 58, 2) != 64
+            or phnum in (0, 0xffff) or not shnum or integer(e, 62, 2) >= shnum):
+        return set()
+    elf_size = integer(header, 24, 8)
+    elf_ph = bounded(integer(e, 32, 8), phnum*56, elf_size)
+    elf_sh = bounded(integer(e, 40, 8), shnum*64, elf_size)
+    if elf_ph[0] < 64 or elf_sh[0] < elf_ph[1]:
+        return set()
+    phoff, shoff = integer(header, 56, 8), integer(header, 64, 8)
+    bounded(phoff, phnum*56, plain_end)
+    bounded(shoff, shnum*64, len(data))
+    if phoff < elf+64:
+        return set()
+    # The section table itself still follows the ordinary authenticated path.
+    tables = [s for s in records if integer(s, 16) == 1
+              and integer(s, 0, 8) == shoff and integer(s, 8, 8) == shnum*64
+              and integer(s, 24) == 2 and integer(s, 32) == integer(s, 44) == 1]
+    if len(tables) != 1:
+        return set()
+    programs = []
+    for j in range(phnum):
+        p = header[phoff+j*56:phoff+(j+1)*56]
+        programs.append(bounded(integer(p, 8, 8), integer(p, 32, 8), elf_size))
+    storage = [bounded(integer(s, 0, 8), integer(s, 8, 8), len(data)) for s in records]
+    ordered = sorted(r for r in storage if r[0] < r[1])
+    if any(r[0] < len(header) for r in storage) or any(
+            a[1] > b[0] for a, b in zip(ordered, ordered[1:])):
+        return set()
+    indices = [integer(s, 20) for s in records if integer(s, 16) == 3]
+    opaque = set()
+    if any(overlaps(elf_sh, p) for p in programs):
+        return opaque
+    segments = integer(header, 72, 8)
+    bounded(segments, phnum*32, plain_end)
+    if segments < phoff+phnum*56:
+        return opaque
+    for j in range(phnum):
+        s = header[segments+j*32:segments+(j+1)*32]
+        r = bounded(integer(s, 0, 8), integer(s, 8, 8), len(data))
+        if overlaps(r, (shoff, shoff+shnum*64)):
+            return opaque
+    table = tables[0]
+    table_authenticated = verify_table(table, data[shoff:shoff+shnum*64])
+    if any(integer(s, 16) == 2 for s in records):
+        opaque.add(records.index(table))
+    # Unauthenticated preserved tables never authorize another hash exemption.
+    if not table_authenticated:
+        return opaque
+    for i, s in enumerate(records):
+        if integer(s, 16) != 3 or integer(s, 32) != 1 or integer(s, 44) != 1:
+            continue
+        index = integer(s, 20)
+        if not 0 < index < shnum or indices.count(index) != 1:
+            continue
+        sh = data[shoff+index*64:shoff+(index+1)*64]
+        if (integer(sh, 4) != 1 or integer(sh, 8, 8) != 0 or integer(sh, 16, 8) != 0
+                or not integer(sh, 32, 8) or integer(sh, 32, 8) != integer(s, 8, 8)):
+            continue
+        elf_range = bounded(integer(sh, 24, 8), integer(sh, 32, 8), elf_size)
+        if any(overlaps(elf_range, p) for p in [(0, 64), elf_ph, elf_sh]+programs):
+            continue
+        if any(j != i and overlaps(storage[i], r) for j, r in enumerate(storage)):
+            continue
+        opaque.add(i)
+    return opaque
+
+
 def self_sections(data, key, free=False):
     b = bytearray(data[:integer(data, 16, 8)])
     mi = integer(b, 12)+32
@@ -167,28 +255,44 @@ def self_sections(data, key, free=False):
     b[mh:] = decrypt(info[:16], bytes(b[mh:]), modes.CTR(info[32:48]))
     count = integer(b, mh+12)
     keys = mh+32+count*48
-    sections = []
+    key_end = keys+integer(b, mh+16)*16
+    assert 0 < count <= 65536 and key_end <= len(b)
+    records = [b[mh+32+i*48:mh+32+(i+1)*48] for i in range(count)]
+
+    def verify_hash(record, payload):
+        hi = keys+integer(record, 28)*16
+        assert integer(record, 24) == 2 and hi+96 <= key_end
+        return hmac.digest(bytes(b[hi+32:hi+96]), payload, 'sha1') == b[hi:hi+20]
+
+    opaque_indices = opaque_self_sections(data, b, records, verify_hash)
+    sections, opaque = [], []
     for i in range(count):
         s = mh+32+i*48
         offset, length = integer(b, s, 8), integer(b, s+8, 8)
         payload = data[offset:offset+length]
+        assert len(payload) == length and offset >= len(b)
+        hi = keys+integer(b, s+28)*16
+        assert integer(b, s+24) == 2 and hi+96 <= key_end
+        if i in opaque_indices:
+            opaque.append((bytes(b[s:s+48]), bytes(b[hi:hi+96]), payload))
+            continue
         if integer(b, s+32) == 3:
             k = keys+integer(b, s+36)*16
             iv = keys+integer(b, s+40)*16
             payload = decrypt(bytes(b[k:k+16]), payload, modes.CTR(bytes(b[iv:iv+16])))
-        hi = keys+integer(b, s+28)*16
-        assert hmac.digest(bytes(b[hi+32:hi+96]), payload, 'sha1') == b[hi:hi+20]
+        assert verify_hash(records[i], payload)
         sections.append(zlib.decompress(payload) if integer(b, s+44) == 2 else payload)
     if free:
         npd = b.index(b'NPD\0')
         assert integer(b, npd+8) == 3
         assert cmac(xor(FREE, OMAC2), bytes(b[npd:npd+96])) == b[npd+96:npd+112]
         verify_signature(b, mh)
-    return sections
+    return sections, opaque
 
 
 def edat_plain(b, key):
     version, flags = integer(b, 4), integer(b, 128)
+    assert version in (2, 3, 4) and flags in ((0x0c,) if version == 2 else (0x0c, 0x3c))
     wrap = hx('4ca9c14b01c95309969bec68aa0bc081' if version == 4 else 'be959ca8308defa2e5e180c63712a9ae')
     assert cmac(decrypt(wrap, key), b[:160]) == b[160:176]
     size, block = integer(b, 136, 8), integer(b, 132)
@@ -239,7 +343,9 @@ def main(source, rap, output, cli):
             original = self_sections(a, key)
             converted = self_sections(b, FREE, True)
             assert original == converted
-            sections.extend(original)
+            sections.extend(original[0])
+            assert integer(a, 16, 8) == integer(b, 16, 8)
+            assert a[integer(a, 16, 8):] == b[integer(b, 16, 8):]
             changed.append(name)
     for name, entry in src.entries.items():
         if entry['kind'] == 'directory' or name in changed:
@@ -263,7 +369,7 @@ def main(source, rap, output, cli):
             for offset in {0, max(0, size-65536)}:
                 length = min(65536, size-offset)
                 assert src.read(name, offset, length) == dst.read(name, offset, length), name
-    print('Verified SELF section hashes/signature, EDAT hashes/plaintext, and unchanged-file samples:')
+    print('Verified decoded SELF hashes/signature, opaque auxiliary preservation, EDAT hashes/plaintext, and unchanged-file samples:')
     for name in changed:
         print(' ', name)
 

@@ -65,6 +65,11 @@ fn liberation_publication_cancel_and_no_overwrite() {
         pkg
     };
     let rap = Rap::from_bytes(&[7; 16]).unwrap();
+    assert!(package().needs_liberation(|| false).unwrap());
+    assert!(matches!(
+        package().needs_liberation(|| true),
+        Err(Error::Cancelled)
+    ));
     let output = root.join("out.pkg");
     let mut progress = Vec::new();
     package()
@@ -99,6 +104,23 @@ fn liberation_publication_cancel_and_no_overwrite() {
         .read_exact(&mut header)
         .unwrap();
     assert_eq!(be32(&header, 8), 3);
+    assert!(!result.needs_liberation(|| false).unwrap());
+    for directory in [false, true] {
+        let target = root.join("already-free");
+        let error = if directory {
+            result.liberate_to_directory_with_progress(&rap, &target, || false, |_, _| {})
+        } else {
+            result.liberate_with_progress(&rap, &target, || false, |_, _| {})
+        }
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already-free payloads need no RAP conversion")
+        );
+        assert!(error.to_string().contains("does not unlock trials"));
+        assert!(!target.exists());
+    }
     let saved = fs::read(&output).unwrap();
     let flagged_output = root.join("flagged.pkg");
     let mut flagged = package();
@@ -177,6 +199,7 @@ fn liberation_publication_cancel_and_no_overwrite() {
     assert_eq!(fs::read(&folder_output).unwrap(), saved);
     let from_pkg = root.join("liberated-from-pkg");
     let from_folder = root.join("liberated-from-folder");
+    assert!(folder_needs_liberation(&extracted, || false).unwrap());
     let mut folder_progress = Vec::new();
     package()
         .liberate_to_directory_with_progress(
@@ -286,6 +309,168 @@ fn liberation_publication_cancel_and_no_overwrite() {
             )
             .is_err()
         );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn opaque_self_publication_preserves_payloads_and_rejects_runtime_corruption() {
+    use std::fs;
+
+    let root = std::env::temp_dir().join(format!(
+        "ps3-opaque-self-publication-test-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).unwrap();
+    let rap = Rap::from_bytes(&[7; 16]).unwrap();
+    let original = npdrm::tests::local_self_with_opaque_section();
+    let raw = b"ordinary game data";
+    for corrupt in [false, true] {
+        let case = root.join(if corrupt { "corrupt" } else { "valid" });
+        fs::create_dir(&case).unwrap();
+        let mut source = original.clone();
+        if corrupt {
+            source[0x500] ^= 1;
+        }
+        let input = fixture(
+            0x8000,
+            &[("USRDIR/EBOOT.BIN", 1, &source), ("USRDIR/raw", 3, raw)],
+        );
+        let input_path = case.join("source.pkg");
+        fs::write(&input_path, &input).unwrap();
+        let package = || {
+            let mut pkg = Package::open(fs::File::open(&input_path).unwrap()).unwrap();
+            pkg.metadata = vec![
+                Metadata {
+                    id: 1,
+                    data: 2u32.to_be_bytes().to_vec(),
+                },
+                Metadata {
+                    id: 2,
+                    data: 5u32.to_be_bytes().to_vec(),
+                },
+                Metadata {
+                    id: 3,
+                    data: 0x4eu32.to_be_bytes().to_vec(),
+                },
+                Metadata {
+                    id: 4,
+                    data: vec![0; 8],
+                },
+            ];
+            pkg
+        };
+        let extracted = case.join("source-folder");
+        package().extract(&extracted).unwrap();
+        for folder in [false, true] {
+            for directory in [false, true] {
+                let target = case.join(format!("out-{folder}-{directory}"));
+                let publish = || match (folder, directory) {
+                    (false, false) => {
+                        package().liberate_with_progress(&rap, &target, || false, |_, _| {})
+                    }
+                    (false, true) => package().liberate_to_directory_with_progress(
+                        &rap,
+                        &target,
+                        || false,
+                        |_, _| {},
+                    ),
+                    (true, false) => liberate_folder_with_progress(
+                        &extracted,
+                        [0; 48],
+                        &rap,
+                        &target,
+                        || false,
+                        |_, _| {},
+                    ),
+                    (true, true) => liberate_folder_to_directory_with_progress(
+                        &extracted,
+                        [0; 48],
+                        &rap,
+                        &target,
+                        || false,
+                        |_, _| {},
+                    ),
+                };
+                let before = fs::read_dir(&case).unwrap().count();
+                if corrupt {
+                    let error = publish().unwrap_err();
+                    match error {
+                        Error::ConversionFile { path, source } => {
+                            assert_eq!(path, "USRDIR/EBOOT.BIN");
+                            assert!(matches!(
+                                *source,
+                                Error::Malformed("SELF section hash mismatch")
+                            ));
+                        }
+                        other => panic!("expected section HMAC failure, got {other:?}"),
+                    }
+                    assert!(!target.exists());
+                    assert_eq!(fs::read_dir(&case).unwrap().count(), before);
+                } else {
+                    publish().unwrap();
+                    let (converted, ordinary) = if directory {
+                        assert!(!target.join(pkg_fs::MARKER).exists());
+                        (
+                            fs::read(target.join("USRDIR/EBOOT.BIN")).unwrap(),
+                            fs::read(target.join("USRDIR/raw")).unwrap(),
+                        )
+                    } else {
+                        let mut result = Package::open(fs::File::open(&target).unwrap()).unwrap();
+                        assert_eq!(result.header.release_type, 0);
+                        assert_eq!(result.metadata[0].data, 3u32.to_be_bytes());
+                        let mut read = |path| {
+                            let index = result
+                                .entries
+                                .iter()
+                                .position(|e| e.path() == path)
+                                .unwrap();
+                            let mut data = Vec::new();
+                            result
+                                .read_entry(index)
+                                .unwrap()
+                                .read_to_end(&mut data)
+                                .unwrap();
+                            data
+                        };
+                        (read("USRDIR/EBOOT.BIN"), read("USRDIR/raw"))
+                    };
+                    assert_eq!(converted.len(), source.len());
+                    assert_eq!(&converted[..4], b"SCE\0");
+                    assert_eq!(be32(&converted, 160), 3);
+                    // Runtime, authenticated section table, and opaque auxiliary stay stored verbatim.
+                    for range in [0x500..0x540, 0x540..0x600, 0x600..0x640] {
+                        assert_eq!(&converted[range.clone()], &source[range]);
+                    }
+                    assert_eq!(ordinary, raw);
+                    let saved = if directory {
+                        converted.clone()
+                    } else {
+                        fs::read(&target).unwrap()
+                    };
+                    assert!(publish().is_err());
+                    assert_eq!(
+                        fs::read(if directory {
+                            target.join("USRDIR/EBOOT.BIN")
+                        } else {
+                            target.clone()
+                        })
+                        .unwrap(),
+                        saved
+                    );
+                    if directory {
+                        assert_eq!(fs::read(target.join("USRDIR/raw")).unwrap(), raw);
+                    }
+                    assert_eq!(fs::read_dir(&case).unwrap().count(), before + 1);
+                }
+                assert_eq!(fs::read(&input_path).unwrap(), input);
+                assert_eq!(
+                    fs::read(extracted.join("USRDIR/EBOOT.BIN")).unwrap(),
+                    source
+                );
+                assert_eq!(fs::read(extracted.join("USRDIR/raw")).unwrap(), raw);
+            }
+        }
     }
     fs::remove_dir_all(root).unwrap();
 }

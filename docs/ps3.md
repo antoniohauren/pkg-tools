@@ -61,7 +61,10 @@ cargo run --release -p pkg-cli -- liberate GAME.pkg LICENSE.rap Game-rapless.pkg
 ```
 
 GUI: **Liberate…** opens a source dialog: choose a PKG, the loaded PS3 package,
-or an extracted game root containing `PARAM.SFO` and `USRDIR`. The next dialog
+or an extracted game root containing `PARAM.SFO` and `USRDIR`. A background
+header check runs before RAP lookup. If no payload needs conversion, an
+informational alert explains this and stops before asking for a RAP. This check
+does not validate conversion support or trial/full-game entitlement. Otherwise, the next dialog
 shows an automatically matched RAP and offers **Link RAP…** to override it.
 Matching uses the full content ID, not the package's display filename or title ID:
 `<content-id>.rap`, case-insensitively, beside the source and in its sibling
@@ -86,25 +89,51 @@ RAP files inside the tree are omitted from the output package.
 
 This is an **experimental, entirely native Rust** conversion path intended for
 RPCS3 and PS3 CFW/HEN. Neither emulator launch nor console installation/launch
-has been executed. It does not produce a Sony-authenticated retail package for
+of converted output has been executed. It does not produce a Sony-authenticated retail package for
 stock firmware. There is no runtime scetool, OpenSSL, Python, or key-file dependency.
 
 Supported conversion boundary:
 
 - PS3 game-executable PKGs (metadata content type `5`), with one matching RAP.
-- Local-license NPDRM SELF key revisions `0A`, `19`, `1C`. Metadata is decrypted,
-  section HMACs checked, license changed to FREE, NPD hashes regenerated, and
-  the header signed using the published 3.55 NPDRM key/loader curve `0x27`.
+- Local-license NPDRM SELF key revisions `01`, `0A`, `19`, `1C`. Metadata is decrypted,
+  interpreted/runtime section HMACs checked, license changed to FREE, NPD hashes
+  regenerated, and the header signed using the published 3.55 NPDRM key/loader curve `0x27`.
   Payload sections, compression, executable code, application version, capabilities,
   and required firmware are preserved. Other SELF revisions are explicit errors.
-- Local-license common EDAT (type `0`), version `3`/`4`, uncompressed flags
-  `0x0C`/`0x3C`, block sizes 1–32 KiB. Header/metadata/block hashes are checked.
+  Revision `01` uses the pinned RPCS3 revision-only NPDRM key selection and has
+  synthetic conversion, wrong-RAP and damaged-section coverage. Revision support
+  does not establish installation/launch compatibility.
+- Narrow auxiliary-section preservation: plaintext, uncompressed metadata type `3`
+  is retained opaquely only for a recognized ELF64 big-endian `ET_EXEC` section
+  with `SHT_PROGBITS`, zero flags and zero address. Section tables, indices and
+  sizes must be bounded; auxiliary storage and ELF ranges must be disjoint from
+  program payload ranges. Original bytes and hash metadata are retained, not
+  decoded or HMAC-authenticated, and excluded from EDAT developer-key discovery.
+  All interpreted/runtime sections still require HMAC validation; unknown or
+  ambiguous layouts keep the existing strict path. This preserves source payloads,
+  not their authentication, and makes no console-support claim.
+- A recognized plaintext, uncompressed type `1` ELF section-header table is also
+  preserved outside decoded/key-search material when strict type `2` payloads
+  remain. Its SELF storage must be disjoint from metadata payloads and declared
+  program storage; its ELF range must be disjoint from all program file ranges.
+  A mismatching table HMAC never authorizes auxiliary-section exemptions: only
+  authenticated table contents can classify type `3` data as non-runtime.
+  With an unverified table, type `3` data still requires its own valid HMAC.
+- Local-license common EDAT (type `0`), versions `2`/`3`/`4`: version `2` accepts
+  uncompressed flags `0x0C`; versions `3`/`4` accept `0x0C`/`0x3C`, with block sizes
+  1–32 KiB. Header/metadata/block hashes are checked; version `1` remains unsupported.
   The original developer key must match a known candidate or occur as 16 raw
-  bytes in decoded local-license SELF sections. Conversion keeps that key so
+  bytes in HMAC-validated, decoded local-license SELF sections, never opaque
+  auxiliary sections. Conversion keeps that key so
   existing game code can open the free-license EDAT; unavailable keys are errors.
   Output uses authenticated, encrypted `0x0C` blocks with regenerated hashes.
 - SDAT, already-free EDAT/SELF, non-NPDRM SELF, SFO, artwork, and ordinary files
   are preserved. Files are identified by magic, not just extensions.
+- If no payload needs local-to-free conversion, Liberate stops without writing
+  output. Already-free payloads need no RAP conversion, but FREE licensing does
+  not establish full-game entitlement: Liberate does not unlock trials or supply
+  missing full-game content/unlock packages. Use normal extraction or installation
+  for the existing trial; any required full-game content or entitlement is separate.
 - Network licenses, different per-file content IDs/RAPs, compressed EDAT,
   PS2 Classics/disc-bound EDAT, unsupported key revisions and unknown crypto
   modes fail without publishing output. No silent partial liberation.
@@ -131,6 +160,25 @@ Preparation includes integrity checks, developer-key discovery and a QA hashing
 pass. Progress starts when writing the prepared package; cancellation is checked
 between sections, key-search batches, EDAT blocks and streaming chunks. No
 install/launch guarantee follows from successful payload verification.
+
+Compatibility investigation (2026-11-01): a supplied revision `01` source PKG +
+RAP is reported working in RPCS3 and its original SELF header signature verifies.
+All six remaining section HMACs verify; the auxiliary bytes that failed the earlier HMAC
+check match the current CDN source. These observations motivate the narrow
+preservation rule, not a blanket HMAC exemption. Pinned RPCS3
+[`WriteElf`](https://github.com/RPCS3/rpcs3/blob/fab15ea00541808992ebe0d0363e0f1b1a01033a/rpcs3/Crypto/unself.h#L496-L575)
+emits only metadata type `2` payloads. With auxiliary preservation and EDAT version
+`2` support, conversion succeeds; the independent oracle verifies decoded section
+HMACs, the new signature, unchanged auxiliary bytes/hash records, EDAT plaintext
+and hashes, and unchanged-file samples. Neither source RPCS3 success nor these
+checks establish converted-output installation/launch compatibility; no new
+emulator or console launch was checked.
+
+A second supplied source verifies every program/auxiliary HMAC but has a
+section-table HMAC mismatch, reproduced independently against matching CDN bytes.
+The table is preserved without trusting its contents; auxiliary data is verified
+normally. Conversion and independent payload/signature checks pass for this
+profile too. No section hashes are repaired or regenerated to conceal a mismatch.
 
 Verification (2026-10-15): supplied **SSX / NPUB30892** PKG + RAP produced
 `pkgs/ps3/SSX-rapless.pkg`. An independent Python/cryptography oracle checked
